@@ -1,0 +1,8 @@
+.DS_Store
+*.log
+SubnauticaMoreCoop-Setup.exe
+installer.nsi.tmp
+installer.nsi.bom
+installer.nsi.fresh
+installer.nsi.utf16
+.github/
