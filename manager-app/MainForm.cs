@@ -3,17 +3,22 @@ using System.Diagnostics;
 namespace MoreCoopManager;
 
 /// <summary>
-/// Single-window GUI. The form auto-detects state on launch and after
-/// every install/uninstall, and pushes MaxPlayers slider changes to
-/// settings.json live (UE4SS hot-reloads the value, so no restart needed).
+/// Single-window GUI. Auto-detects game/UE4SS/mod state on launch and after
+/// every action, and pushes MaxPlayers slider changes to settings.json live
+/// (UE4SS hot-reloads, so no restart needed).
+///
+/// If auto-detection of the game path fails (Steam install in an unusual
+/// place, etc.) the user can click "浏览..." to pick the folder manually;
+/// the chosen path is saved to HKCU and used for all future launches.
 /// </summary>
 internal sealed class MainForm : Form
 {
-    private const string Title = "MoreCoop Manager - 深海迷航 2 多人解锁 v1.1.0";
+    private const string Title = "MoreCoop Manager - 深海迷航 2 多人解锁 v1.3.0";
     private const string GithubUrl = "https://github.com/wuha-like-sleep/SubnauticaMoreCoop";
     private const string UE4SSUrl = "https://www.nexusmods.com/subnautica2/mods/36";
 
     private readonly Label _lblGame, _lblUE4SS, _lblMod;
+    private readonly Button _btnBrowseGame;
     private readonly TrackBar _trkPlayers;
     private readonly NumericUpDown _numPlayers;
     private readonly Button _btnInstall, _btnUninstall, _btnFolder, _btnAbout;
@@ -25,25 +30,38 @@ internal sealed class MainForm : Form
     public MainForm()
     {
         Text = Title;
-        ClientSize = new Size(560, 460);
+        ClientSize = new Size(560, 470);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         Font = new Font("Microsoft YaHei UI", 9F);
 
         // --- Status group ---
-        var grpStatus = new GroupBox { Text = "状态", Location = new Point(12, 8), Size = new Size(536, 110) };
-        _lblGame = MakeStatusLabel(15, 28);
-        _lblUE4SS = MakeStatusLabel(15, 53);
-        _lblMod = MakeStatusLabel(15, 78);
-        grpStatus.Controls.AddRange([_lblGame, _lblUE4SS, _lblMod]);
+        var grpStatus = new GroupBox { Text = "状态", Location = new Point(12, 8), Size = new Size(536, 120) };
+
+        _lblGame = MakeStatusLabel(15, 28, width: 420);
+        _btnBrowseGame = new Button
+        {
+            Text = "浏览...",
+            Location = new Point(445, 26),
+            Size = new Size(80, 26),
+            FlatStyle = FlatStyle.System,
+        };
+        _btnBrowseGame.Click += (_, _) => OnBrowseGame();
+        var ttBrowse = new ToolTip();
+        ttBrowse.SetToolTip(_btnBrowseGame, "如果自动检测没找到游戏 (或找错了), 点这里手动选游戏根目录");
+
+        _lblUE4SS = MakeStatusLabel(15, 58, width: 510);
+        _lblMod = MakeStatusLabel(15, 88, width: 510);
+
+        grpStatus.Controls.AddRange([_lblGame, _btnBrowseGame, _lblUE4SS, _lblMod]);
         Controls.Add(grpStatus);
 
         // --- Player count group ---
         var grpPlayers = new GroupBox
         {
             Text = "人数上限  (拖动滑块即可立即生效, 无需重启游戏)",
-            Location = new Point(12, 126),
+            Location = new Point(12, 136),
             Size = new Size(536, 90),
         };
         _trkPlayers = new TrackBar
@@ -71,18 +89,18 @@ internal sealed class MainForm : Form
         Controls.Add(grpPlayers);
 
         // --- Action buttons ---
-        _btnInstall = MakeButton("一键安装 / 更新", 12, 225, Color.FromArgb(76, 175, 80), Color.White);
+        _btnInstall = MakeButton("一键安装 / 更新", 12, 235, Color.FromArgb(76, 175, 80), Color.White);
         _btnInstall.Click += async (_, _) => await InstallAsync();
-        _btnUninstall = MakeButton("卸载", 144, 225);
+        _btnUninstall = MakeButton("卸载", 144, 235);
         _btnUninstall.Click += async (_, _) => await UninstallAsync();
-        _btnFolder = MakeButton("打开 Mod 目录", 276, 225);
+        _btnFolder = MakeButton("打开 Mod 目录", 276, 235);
         _btnFolder.Click += (_, _) => OpenModsFolder();
-        _btnAbout = MakeButton("关于", 408, 225);
+        _btnAbout = MakeButton("关于", 408, 235);
         _btnAbout.Click += (_, _) => ShowAbout();
         Controls.AddRange([_btnInstall, _btnUninstall, _btnFolder, _btnAbout]);
 
         // --- Log box ---
-        var grpLog = new GroupBox { Text = "日志", Location = new Point(12, 275), Size = new Size(536, 170) };
+        var grpLog = new GroupBox { Text = "日志", Location = new Point(12, 285), Size = new Size(536, 170) };
         _txtLog = new TextBox
         {
             Location = new Point(10, 22),
@@ -108,9 +126,9 @@ internal sealed class MainForm : Form
         if (gamePath is null)
         {
             _installer = null;
-            SetStatus(_lblGame, "游戏: ✗ 未找到 (请确认深海迷航 2 已通过 Steam 安装)", false);
-            SetStatus(_lblUE4SS, "UE4SS: — (先要找到游戏)", null);
-            SetStatus(_lblMod, "MoreCoop: — (先要找到游戏)", null);
+            SetStatus(_lblGame, "游戏: ✗ 未找到 — 请点右边 [浏览...] 手动选游戏目录", false);
+            SetStatus(_lblUE4SS, "UE4SS: — (先选游戏目录)", null);
+            SetStatus(_lblMod, "MoreCoop: — (先选游戏目录)", null);
             _btnInstall.Enabled = false;
             _btnUninstall.Enabled = false;
             _btnFolder.Enabled = false;
@@ -118,7 +136,9 @@ internal sealed class MainForm : Form
         }
 
         _installer = new ModInstaller(gamePath);
-        SetStatus(_lblGame, $"游戏: ✓ {gamePath}", true);
+        var sourceTag = SteamFinder.LoadSavedPath() == gamePath ? "手选" : "自动检测";
+        SetStatus(_lblGame, $"游戏: ✓ [{sourceTag}] {gamePath}", true);
+
         SetStatus(_lblUE4SS,
             _installer.UE4SSInstalled
                 ? "UE4SS: ✓ 已安装"
@@ -142,6 +162,50 @@ internal sealed class MainForm : Form
         _btnInstall.Enabled = true;
         _btnUninstall.Enabled = _installer.ModInstalled;
         _btnFolder.Enabled = _installer.UE4SSInstalled;
+    }
+
+    // ----------------------------------------------------------------
+    // Manual game folder selection
+    // ----------------------------------------------------------------
+    private void OnBrowseGame()
+    {
+        using var dlg = new FolderBrowserDialog
+        {
+            Description = "选择深海迷航 2 的游戏根目录\r\n(包含 Subnautica2 子目录的那一层, 通常叫 'Subnautica 2')",
+            UseDescriptionForTitle = true,
+            ShowNewFolderButton = false,
+            // Pre-select current path if we have one
+            SelectedPath = _installer?.GamePath
+                ?? SteamFinder.LoadSavedPath()
+                ?? Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+        };
+
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+        var picked = dlg.SelectedPath;
+
+        if (!SteamFinder.IsValidGamePath(picked))
+        {
+            // Maybe they picked the *parent* (e.g. "steamapps\common"). Try to be helpful.
+            var deeper = Path.Combine(picked, "Subnautica 2");
+            if (SteamFinder.IsValidGamePath(deeper))
+            {
+                picked = deeper;
+            }
+            else
+            {
+                MessageBox.Show(this,
+                    $"这不像深海迷航 2 的根目录:\r\n{picked}\r\n\r\n" +
+                    "正确的目录里应该有一个名叫 [Subnautica2] 的子文件夹 (注意没有空格)。\r\n" +
+                    "通常路径长这样: ...\\steamapps\\common\\Subnautica 2",
+                    "选错了", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+        }
+
+        SteamFinder.SaveUserPath(picked);
+        Log($"已手动设置游戏目录: {picked}");
+        RefreshAll();
     }
 
     // ----------------------------------------------------------------
@@ -244,24 +308,38 @@ internal sealed class MainForm : Form
 
     private void ShowAbout()
     {
-        var msg = """
-                  MoreCoop Manager v1.1.0
+        var savedPath = SteamFinder.LoadSavedPath();
+        var savedNote = savedPath is null
+            ? ""
+            : $"\r\n\r\n当前手动设置的游戏目录:\r\n{savedPath}\r\n(点 [否] 后会清除并改回自动检测)";
 
-                  深海迷航 2 多人人数解锁补丁
-                  把官方 4 人上限改成可调 (4–64 人)
+        var msg = $"""
+                   MoreCoop Manager v1.3.0
 
-                  许可: GPL-3.0
-                  派生自: Zeusfail/Too-Many-Divers v1.2.0
+                   深海迷航 2 多人人数解锁补丁
+                   把官方 4 人上限改成可调 (4–64 人)
 
-                  - 只有房主需要装本 mod, 朋友用原版即可加入
-                  - 改人数后无需重启, UE4SS 会热生效
-                  - 完全可逆, 不修改任何游戏原文件
+                   许可: GPL-3.0
+                   派生自: Zeusfail/Too-Many-Divers v1.2.0
 
-                  点 [是] 打开 GitHub 仓库页面
-                  """;
+                   - 只有房主需要装本 mod, 朋友用原版即可加入
+                   - 改人数后无需重启, UE4SS 会热生效
+                   - 完全可逆, 不修改任何游戏原文件{savedNote}
+
+                   [是] 打开 GitHub 仓库  [否] {(savedPath is null ? "关闭" : "清除手动路径")}
+                   """;
         var result = MessageBox.Show(this, msg, "关于 MoreCoop Manager",
             MessageBoxButtons.YesNo, MessageBoxIcon.Information);
-        if (result == DialogResult.Yes) OpenUrl(GithubUrl);
+        if (result == DialogResult.Yes)
+        {
+            OpenUrl(GithubUrl);
+        }
+        else if (savedPath is not null)
+        {
+            SteamFinder.ClearSavedPath();
+            Log("已清除手动游戏路径, 将重新自动检测");
+            RefreshAll();
+        }
     }
 
     // ----------------------------------------------------------------
@@ -274,10 +352,10 @@ internal sealed class MainForm : Form
         else _txtLog.AppendText(line);
     }
 
-    private static Label MakeStatusLabel(int x, int y) => new()
+    private static Label MakeStatusLabel(int x, int y, int width = 510) => new()
     {
         Location = new Point(x, y),
-        Size = new Size(510, 22),
+        Size = new Size(width, 22),
         Text = "(检测中...)",
         AutoEllipsis = true,
     };

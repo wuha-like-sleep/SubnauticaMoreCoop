@@ -9,7 +9,7 @@ SetCompressor /SOLID lzma
 ; App metadata
 ; ----------------------------------------------------------------
 !define APP_NAME      "MoreCoop"
-!define APP_VERSION   "1.2.0"
+!define APP_VERSION   "1.3.0"
 !define APP_PUBLISHER "wuha-like-sleep"
 !define APP_URL       "https://github.com/wuha-like-sleep/SubnauticaMoreCoop"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}"
