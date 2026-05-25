@@ -11,12 +11,13 @@
 
 到 [Releases](https://github.com/wuha-like-sleep/SubnauticaMoreCoop/releases/latest) 下载 **`MoreCoopManager.exe`**，双击运行。
 
-界面里：
-- 自动检测游戏路径、UE4SS、mod 安装状态
-- **拖动滑块改人数** → 立即生效，不用关游戏
-- 一个按钮装、一个按钮卸、一个按钮打开 Mod 目录
+**就这一步。** v1.4 起，UE4SS 已经内嵌到 exe 里，不用再去 Nexus 下载任何东西，全程不联网。
 
-唯一前置：必须先装 [UE4SS for Subnautica 2](https://www.nexusmods.com/subnautica2/mods/36)（GUI 会检测并提示）。
+界面里：
+- 自动检测游戏路径，找不到点 [浏览...] 手动选
+- 状态栏显示游戏/UE4SS/mod 三个组件是否就绪
+- **拖动滑块改人数** → 立即生效，不用关游戏
+- 一个按钮装（同时装 UE4SS + MoreCoop）、一个按钮卸（可选一起卸 UE4SS）、一个按钮打开 Mod 目录
 
 ## 其他安装方式
 
@@ -77,8 +78,10 @@ dotnet publish -c Release -r win-x64 --self-contained true \
 
 需要 .NET 8 SDK。可以从 Mac/Linux 交叉编译 Windows .exe（项目里加了 `EnableWindowsTargeting`）。
 
-## 致谢
+## 致谢与许可
 
-- [Zeusfail/Too-Many-Divers](https://github.com/Zeusfail/Too-Many-Divers) — 补丁原理来源
-- [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS) — UE5 注入框架
+- 本程序: **GPL-3.0** (wuha-like-sleep)
+- 补丁原理: [Zeusfail/Too-Many-Divers](https://github.com/Zeusfail/Too-Many-Divers) v1.2.0 (GPL-3.0)
+- 内嵌的 UE4SS: [Subnautica2Modding/Subnautica2-UE4SS](https://github.com/Subnautica2Modding/Subnautica2-UE4SS) 1.0.0-pre.1 (**MIT**, Copyright Narknon)
+- 上游 UE4SS 框架: [UE4SS-RE/RE-UE4SS](https://github.com/UE4SS-RE/RE-UE4SS) (MIT)
 - Unknown Worlds — 深海迷航 2 开发商

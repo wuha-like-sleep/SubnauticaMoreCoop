@@ -9,7 +9,7 @@ SetCompressor /SOLID lzma
 ; App metadata
 ; ----------------------------------------------------------------
 !define APP_NAME      "MoreCoop"
-!define APP_VERSION   "1.3.0"
+!define APP_VERSION   "1.4.0"
 !define APP_PUBLISHER "wuha-like-sleep"
 !define APP_URL       "https://github.com/wuha-like-sleep/SubnauticaMoreCoop"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}"
@@ -120,14 +120,29 @@ FunctionEnd
 ; ----------------------------------------------------------------
 Section "Install" SecInstall
 
-    StrCpy $UE4SS_DIR "$GAME_DIR\Subnautica2\Binaries\Win64\ue4ss"
+    !define WIN64_DIR "$GAME_DIR\Subnautica2\Binaries\Win64"
+    StrCpy $UE4SS_DIR "${WIN64_DIR}\ue4ss"
     StrCpy $MOD_DIR   "$UE4SS_DIR\Mods\MoreCoop"
     StrCpy $MODS_TXT  "$UE4SS_DIR\Mods\mods.txt"
 
-    ; Verify UE4SS is installed first
-    ${IfNot} ${FileExists} "$UE4SS_DIR\*.*"
-        MessageBox MB_ICONSTOP|MB_OK "未检测到 UE4SS, 本 mod 依赖 UE4SS 才能运行。$\r$\n$\r$\n请先安装 UE4SS:$\r$\nhttps://www.nexusmods.com/subnautica2/mods/36$\r$\n$\r$\n装完 UE4SS 后再运行本安装程序。"
+    ; Verify game directory looks right
+    ${IfNot} ${FileExists} "${WIN64_DIR}\*.*"
+        MessageBox MB_ICONSTOP|MB_OK "游戏目录看起来不对, 找不到:$\r$\n${WIN64_DIR}$\r$\n$\r$\n请确认你选的是深海迷航 2 的根目录。"
         Abort
+    ${EndIf}
+
+    ; Install UE4SS if not already present (extracted from this installer)
+    ${IfNot} ${FileExists} "$UE4SS_DIR\*.*"
+        DetailPrint "未检测到 UE4SS, 正在安装内嵌的 UE4SS 7 MB..."
+        SetOutPath "${WIN64_DIR}"
+        File "ue4ss-extracted\dwmapi.dll"
+        File /r "ue4ss-extracted\ue4ss"
+        ; Marker so uninstall knows we installed UE4SS
+        FileOpen $0 "$UE4SS_DIR\installed-by-morecoop.txt" w
+        FileWrite $0 "Installed by SubnauticaMoreCoop-Setup.exe on ${__TIMESTAMP__}$\r$\nRemove this file to prevent uninstaller from also removing UE4SS.$\r$\n"
+        FileClose $0
+    ${Else}
+        DetailPrint "UE4SS 已存在, 跳过 UE4SS 安装"
     ${EndIf}
 
     ; Backup mods.txt before modifying (so uninstall can restore)
@@ -208,6 +223,16 @@ Section "Uninstall"
         Rename "$INSTDIR\..\mods.txt.morecoop-backup" "$MODS_TXT"
     ${ElseIf} ${FileExists} "$MODS_TXT"
         nsExec::Exec 'powershell -NoProfile -ExecutionPolicy Bypass -Command "(Get-Content \"$MODS_TXT\") | Where-Object { $_ -notmatch \"^MoreCoop\" } | Set-Content \"$MODS_TXT\""'
+    ${EndIf}
+
+    ; If we installed UE4SS (marker file present), offer to remove it too.
+    ; $INSTDIR\..\..  =  Win64\ue4ss  →  marker at $INSTDIR\..\..\installed-by-morecoop.txt
+    ${If} ${FileExists} "$INSTDIR\..\..\installed-by-morecoop.txt"
+        MessageBox MB_ICONQUESTION|MB_YESNO "UE4SS 是本程序之前装的, 是否一起卸掉?$\r$\n$\r$\n[是] 一起卸 (游戏完全恢复原版)$\r$\n[否] 只卸 MoreCoop, 保留 UE4SS (以后装其他 UE4SS mod 用)" IDNO skip_ue4ss
+            ; Yes — remove UE4SS folder and proxy DLL
+            RMDir /r "$INSTDIR\..\.."                                   ; ue4ss\
+            Delete  "$INSTDIR\..\..\..\dwmapi.dll"                       ; Win64\dwmapi.dll
+        skip_ue4ss:
     ${EndIf}
 
     DeleteRegKey HKLM "${UNINSTALL_KEY}"

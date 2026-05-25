@@ -3,19 +3,18 @@ using System.Diagnostics;
 namespace MoreCoopManager;
 
 /// <summary>
-/// Single-window GUI. Auto-detects game/UE4SS/mod state on launch and after
-/// every action, and pushes MaxPlayers slider changes to settings.json live
-/// (UE4SS hot-reloads, so no restart needed).
+/// Single-window GUI for installing MoreCoop. As of v1.4 the manager bundles
+/// UE4SS itself, so the user never has to leave this app for anything except
+/// owning the game.
 ///
-/// If auto-detection of the game path fails (Steam install in an unusual
-/// place, etc.) the user can click "浏览..." to pick the folder manually;
-/// the chosen path is saved to HKCU and used for all future launches.
+/// State refresh happens on launch, after install, after uninstall, and after
+/// the user picks a new game folder. MaxPlayers slider changes are saved to
+/// settings.json on every edit — UE4SS hot-reloads, no game restart.
 /// </summary>
 internal sealed class MainForm : Form
 {
-    private const string Title = "MoreCoop Manager - 深海迷航 2 多人解锁 v1.3.0";
+    private const string Title = "MoreCoop Manager - 深海迷航 2 多人解锁 v1.4.0";
     private const string GithubUrl = "https://github.com/wuha-like-sleep/SubnauticaMoreCoop";
-    private const string UE4SSUrl = "https://www.nexusmods.com/subnautica2/mods/36";
 
     private readonly Label _lblGame, _lblUE4SS, _lblMod;
     private readonly Button _btnBrowseGame;
@@ -48,8 +47,8 @@ internal sealed class MainForm : Form
             FlatStyle = FlatStyle.System,
         };
         _btnBrowseGame.Click += (_, _) => OnBrowseGame();
-        var ttBrowse = new ToolTip();
-        ttBrowse.SetToolTip(_btnBrowseGame, "如果自动检测没找到游戏 (或找错了), 点这里手动选游戏根目录");
+        var tt = new ToolTip();
+        tt.SetToolTip(_btnBrowseGame, "如果自动检测没找到游戏 (或找错了), 点这里手动选游戏根目录");
 
         _lblUE4SS = MakeStatusLabel(15, 58, width: 510);
         _lblMod = MakeStatusLabel(15, 88, width: 510);
@@ -139,11 +138,15 @@ internal sealed class MainForm : Form
         var sourceTag = SteamFinder.LoadSavedPath() == gamePath ? "手选" : "自动检测";
         SetStatus(_lblGame, $"游戏: ✓ [{sourceTag}] {gamePath}", true);
 
-        SetStatus(_lblUE4SS,
-            _installer.UE4SSInstalled
-                ? "UE4SS: ✓ 已安装"
-                : "UE4SS: ✗ 未安装 (本 mod 依赖 UE4SS, 点 [一键安装] 会提示下载)",
-            _installer.UE4SSInstalled);
+        if (_installer.UE4SSInstalled)
+        {
+            var origin = _installer.UE4SSInstalledByUs ? "本程序装的" : "你自己装的";
+            SetStatus(_lblUE4SS, $"UE4SS: ✓ 已安装 ({origin})", true);
+        }
+        else
+        {
+            SetStatus(_lblUE4SS, "UE4SS: ○ 未安装 — 点 [一键安装] 时会自动装上 (内嵌, 不联网)", null);
+        }
 
         if (_installer.ModInstalled)
         {
@@ -174,7 +177,6 @@ internal sealed class MainForm : Form
             Description = "选择深海迷航 2 的游戏根目录\r\n(包含 Subnautica2 子目录的那一层, 通常叫 'Subnautica 2')",
             UseDescriptionForTitle = true,
             ShowNewFolderButton = false,
-            // Pre-select current path if we have one
             SelectedPath = _installer?.GamePath
                 ?? SteamFinder.LoadSavedPath()
                 ?? Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
@@ -186,7 +188,6 @@ internal sealed class MainForm : Form
 
         if (!SteamFinder.IsValidGamePath(picked))
         {
-            // Maybe they picked the *parent* (e.g. "steamapps\common"). Try to be helpful.
             var deeper = Path.Combine(picked, "Subnautica 2");
             if (SteamFinder.IsValidGamePath(deeper))
             {
@@ -242,30 +243,23 @@ internal sealed class MainForm : Form
     {
         if (_installer is null) return;
 
-        if (!_installer.UE4SSInstalled)
-        {
-            var result = MessageBox.Show(this,
-                "UE4SS 未安装。本 mod 依赖 UE4SS 才能运行。\r\n\r\n点击 [是] 打开 Nexus 下载页面 (需要 Nexus 账号, 免费)。\r\n下载装好 UE4SS 后再回来点 [一键安装]。",
-                "需要先装 UE4SS", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-            if (result == DialogResult.Yes) OpenUrl(UE4SSUrl);
-            return;
-        }
-
         _btnInstall.Enabled = false;
+        _btnUninstall.Enabled = false;
         var target = (int)_numPlayers.Value;
-        Log($"正在安装 MoreCoop (人数上限 {target})...");
+        Log($"开始安装, 目标人数上限 = {target}");
 
         try
         {
-            await Task.Run(() => _installer.Install(target));
-            Log("✓ 安装成功! 启动游戏后, 按 Insert 打开 UE4SS 控制台应看到 [MoreCoop] 加载日志");
+            // Marshal progress messages back to UI thread via the Log helper
+            await Task.Run(() => _installer.Install(target, msg => Log(msg)));
+            Log("✓ 全部完成! 启动游戏后, 按 Insert 打开 UE4SS 控制台应看到 [MoreCoop] 加载日志");
             RefreshAll();
         }
         catch (Exception ex)
         {
             Log($"✗ 安装失败: {ex.Message}");
             MessageBox.Show(this, ex.Message, "安装失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            _btnInstall.Enabled = true;
+            RefreshAll();
         }
     }
 
@@ -273,24 +267,46 @@ internal sealed class MainForm : Form
     {
         if (_installer is null || !_installer.ModInstalled) return;
 
-        var confirm = MessageBox.Show(this,
-            "确认卸载 MoreCoop?\r\n\r\n本操作只删除 mod 文件, 不影响 UE4SS 本身和游戏文件。\r\n卸载后游戏将恢复 4 人上限。",
-            "确认卸载", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-        if (confirm != DialogResult.Yes) return;
+        var alsoRemoveUE4SS = false;
+        var promptText = "确认卸载 MoreCoop?\r\n\r\n" +
+                         "本操作会删除 mod 文件, 游戏将恢复 4 人上限。";
 
+        if (_installer.UE4SSInstalledByUs)
+        {
+            var result = MessageBox.Show(this,
+                "确认卸载 MoreCoop?\r\n\r\n" +
+                "UE4SS 是本程序之前安装的。是否一起卸掉?\r\n\r\n" +
+                "[是] 一起卸 (MoreCoop + UE4SS, 游戏完全恢复原版)\r\n" +
+                "[否] 只卸 MoreCoop (保留 UE4SS, 以后装其他 UE4SS mod 用)\r\n" +
+                "[取消] 不卸",
+                "确认卸载", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+            if (result == DialogResult.Cancel) return;
+            alsoRemoveUE4SS = (result == DialogResult.Yes);
+        }
+        else
+        {
+            var result = MessageBox.Show(this, promptText,
+                "确认卸载", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (result != DialogResult.Yes) return;
+        }
+
+        _btnInstall.Enabled = false;
         _btnUninstall.Enabled = false;
-        Log("正在卸载...");
+        Log("开始卸载...");
+
         try
         {
-            await Task.Run(() => _installer.Uninstall());
-            Log("✓ 已卸载, 游戏恢复原版状态");
+            await Task.Run(() => _installer.Uninstall(alsoRemoveUE4SS, msg => Log(msg)));
+            Log(alsoRemoveUE4SS
+                ? "✓ 已卸载, MoreCoop + UE4SS 都已移除, 游戏完全恢复原版"
+                : "✓ MoreCoop 已卸载, 游戏恢复 4 人原版 (UE4SS 保留)");
             RefreshAll();
         }
         catch (Exception ex)
         {
             Log($"✗ 卸载失败: {ex.Message}");
             MessageBox.Show(this, ex.Message, "卸载失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            _btnUninstall.Enabled = true;
+            RefreshAll();
         }
     }
 
@@ -311,22 +327,27 @@ internal sealed class MainForm : Form
         var savedPath = SteamFinder.LoadSavedPath();
         var savedNote = savedPath is null
             ? ""
-            : $"\r\n\r\n当前手动设置的游戏目录:\r\n{savedPath}\r\n(点 [否] 后会清除并改回自动检测)";
+            : $"\r\n\r\n当前手选的游戏目录:\r\n{savedPath}";
 
         var msg = $"""
-                   MoreCoop Manager v1.3.0
+                   MoreCoop Manager v1.4.0
 
-                   深海迷航 2 多人人数解锁补丁
-                   把官方 4 人上限改成可调 (4–64 人)
+                   深海迷航 2 多人人数解锁补丁 (一键安装)
 
-                   许可: GPL-3.0
-                   派生自: Zeusfail/Too-Many-Divers v1.2.0
+                   ▸ 自动检测游戏 + UE4SS + mod 状态
+                   ▸ 内嵌 UE4SS, 全程不联网, 不用单独下载
+                   ▸ 人数 4–64, 拖滑块热生效, 不用关游戏
+                   ▸ 完全可逆, 卸载干净
 
-                   - 只有房主需要装本 mod, 朋友用原版即可加入
-                   - 改人数后无需重启, UE4SS 会热生效
-                   - 完全可逆, 不修改任何游戏原文件{savedNote}
+                   ▸ 只有房主装就行, 朋友用原版可加入
 
-                   [是] 打开 GitHub 仓库  [否] {(savedPath is null ? "关闭" : "清除手动路径")}
+                   ─── 许可与归属 ───
+                   本程序: GPL-3.0  (wuha-like-sleep)
+                   补丁原理: Zeusfail/Too-Many-Divers v1.2.0 (GPL-3.0)
+                   UE4SS: MIT  (Narknon, UE4SS-RE/Subnautica2Modding){savedNote}
+
+                   [是] 打开 GitHub 仓库
+                   {(savedPath is null ? "[否] 关闭" : "[否] 清除手选路径, 改回自动检测")}
                    """;
         var result = MessageBox.Show(this, msg, "关于 MoreCoop Manager",
             MessageBoxButtons.YesNo, MessageBoxIcon.Information);
@@ -337,7 +358,7 @@ internal sealed class MainForm : Form
         else if (savedPath is not null)
         {
             SteamFinder.ClearSavedPath();
-            Log("已清除手动游戏路径, 将重新自动检测");
+            Log("已清除手选游戏路径, 将重新自动检测");
             RefreshAll();
         }
     }

@@ -40,7 +40,18 @@ jobs:
           copy publish\MoreCoopManager.exe ..\MoreCoopManager.exe
 
       # --------------------------------------------------------------
-      # 2) Build the NSIS installer (wraps mod + GUI manager)
+      # 2) Extract bundled UE4SS so the NSIS installer can File-include it
+      # --------------------------------------------------------------
+      - name: Extract UE4SS for NSIS bundling
+        shell: pwsh
+        run: |
+          Expand-Archive -Path manager-app\Resources\UE4SS_SN2.zip `
+            -DestinationPath ue4ss-extracted -Force
+          Write-Host "Extracted contents:"
+          Get-ChildItem ue4ss-extracted | Format-Table Name, Length
+
+      # --------------------------------------------------------------
+      # 3) Build the NSIS installer (wraps mod + UE4SS)
       # --------------------------------------------------------------
       - name: Install NSIS
         shell: pwsh
