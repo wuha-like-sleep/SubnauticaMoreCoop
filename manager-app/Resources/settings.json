@@ -1,0 +1,4 @@
+{
+  "_comment": "修改下面的 MaxPlayers 数值即可调整人数上限。范围 4-64，推荐 8（最稳）或 16（Too Many Divers 默认）。改完保存即可，无需重启游戏。",
+  "MaxPlayers": 8
+}

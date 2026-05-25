@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RootNamespace>MoreCoopManager</RootNamespace>
+    <AssemblyName>MoreCoopManager</AssemblyName>
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- Required when cross-compiling to Windows from macOS/Linux -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <Version>1.1.0</Version>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.0.0</FileVersion>
+    <Company>wuha-like-sleep</Company>
+    <Product>MoreCoop Manager</Product>
+    <Description>深海迷航 2 多人人数解锁补丁管理器</Description>
+    <Copyright>Copyright (C) 2026 wuha-like-sleep, GPL-3.0</Copyright>
+
+    <!-- Publish settings -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\main.lua" />
+    <EmbeddedResource Include="Resources\settings.json" />
+    <EmbeddedResource Include="Resources\LICENSE" />
+  </ItemGroup>
+
+</Project>
