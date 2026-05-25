@@ -1,4 +1,4 @@
-; MoreCoop - Subnautica 2 多人人数解锁 - NSIS Installer
+﻿; MoreCoop - Subnautica 2 多人人数解锁 - NSIS Installer
 ; Build with: makensis installer.nsi   (NSIS 3.x)
 ; License: GPL-3.0
 
@@ -33,6 +33,7 @@ Var MODS_TXT
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
+!include "WordFunc.nsh"   ; provides ${WordFind}, ${WordReplace}
 
 !define MUI_ICON   "${NSISDIR}\Contrib\Graphics\Icons\modern-install.ico"
 !define MUI_UNICON "${NSISDIR}\Contrib\Graphics\Icons\modern-uninstall.ico"
