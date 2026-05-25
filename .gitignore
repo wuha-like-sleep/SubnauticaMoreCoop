@@ -5,7 +5,6 @@ installer.nsi.tmp
 installer.nsi.bom
 installer.nsi.fresh
 installer.nsi.utf16
-.github/
 
 # C# build output
 manager-app/bin/

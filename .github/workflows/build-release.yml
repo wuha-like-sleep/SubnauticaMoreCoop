@@ -1,0 +1,95 @@
+name: Build All Installers and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Tag name to attach build to (e.g. v1.2.0). Leave blank for artifacts only.'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # --------------------------------------------------------------
+      # 1) Build the C# WinForms manager (real Windows-native build)
+      # --------------------------------------------------------------
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build MoreCoopManager.exe
+        shell: cmd
+        run: |
+          cd manager-app
+          dotnet publish -c Release -r win-x64 --self-contained true ^
+            /p:PublishSingleFile=true ^
+            /p:EnableCompressionInSingleFile=true ^
+            -o publish
+          copy publish\MoreCoopManager.exe ..\MoreCoopManager.exe
+
+      # --------------------------------------------------------------
+      # 2) Build the NSIS installer (wraps mod + GUI manager)
+      # --------------------------------------------------------------
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis -y --no-progress
+
+      - name: Build SubnauticaMoreCoop-Setup.exe
+        shell: cmd
+        run: |
+          "C:\Program Files (x86)\NSIS\makensis.exe" installer.nsi
+
+      # --------------------------------------------------------------
+      # 3) Build the two zips (bundle + mod-only)
+      # --------------------------------------------------------------
+      - name: Build bundle zip (mod + bat scripts + LICENSE + README)
+        shell: pwsh
+        run: |
+          Compress-Archive -Path MoreCoop,install.bat,uninstall.bat,README.md,LICENSE `
+            -DestinationPath SubnauticaMoreCoop.zip -Force
+
+      - name: Build mod-only zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path MoreCoop -DestinationPath MoreCoop-mod-only.zip -Force
+
+      # --------------------------------------------------------------
+      # 4) Always upload as workflow artifacts (so manual runs work too)
+      # --------------------------------------------------------------
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: |
+            MoreCoopManager.exe
+            SubnauticaMoreCoop-Setup.exe
+            SubnauticaMoreCoop.zip
+            MoreCoop-mod-only.zip
+          retention-days: 30
+
+      # --------------------------------------------------------------
+      # 5) On tag push: create/update the GitHub Release with all assets
+      # --------------------------------------------------------------
+      - name: Create or update Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            MoreCoopManager.exe
+            SubnauticaMoreCoop-Setup.exe
+            SubnauticaMoreCoop.zip
+            MoreCoop-mod-only.zip
+          generate_release_notes: false
+          fail_on_unmatched_files: true
