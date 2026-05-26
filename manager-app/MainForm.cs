@@ -3,15 +3,17 @@ using System.Diagnostics;
 namespace MoreCoopManager;
 
 /// <summary>
-/// Single-window GUI for installing MoreCoop. As of v1.4 the manager bundles
-/// UE4SS itself; as of v1.5 it also detects whether the game is currently
-/// running (refuses to install/uninstall mid-session), can launch the game
-/// via Steam, and mirrors every log line to %APPDATA%\MoreCoop\manager.log.
+/// Single-window GUI for installing MoreCoop.
+///
+/// v1.4 bundled UE4SS, v1.5 added game-running guard / launch button / file log,
+/// v1.6 enlarges the window from 560×470 to 880×600 with bigger fonts so it
+/// stops feeling cramped on modern displays.
 /// </summary>
 internal sealed class MainForm : Form
 {
-    private const string Title = "MoreCoop Manager - 深海迷航 2 多人解锁 v1.5.0";
+    private const string Title = "MoreCoop Manager - 深海迷航 2 多人解锁 v1.6.0";
     private const string GithubUrl = "https://github.com/wuha-like-sleep/SubnauticaMoreCoop";
+    private const string LatestReleaseUrl = "https://github.com/wuha-like-sleep/SubnauticaMoreCoop/releases/latest";
     private const int SubnauticaSteamAppId = 1962700;
     private const string GameProcessName = "Subnautica2-Win64-Shipping";
 
@@ -29,62 +31,71 @@ internal sealed class MainForm : Form
     public MainForm()
     {
         Text = Title;
-        ClientSize = new Size(560, 470);
+        ClientSize = new Size(880, 600);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
-        Font = new Font("Microsoft YaHei UI", 9F);
+        Font = new Font("Microsoft YaHei UI", 10F);
 
-        // The <ApplicationIcon> in csproj sets the Win32 PE icon (taskbar / explorer);
-        // ExtractAssociatedIcon pulls it back out so the form's title-bar icon matches.
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); }
         catch { /* fall back to default */ }
 
-        // --- Status group ---
-        var grpStatus = new GroupBox { Text = "状态", Location = new Point(12, 8), Size = new Size(536, 120) };
+        var tt = new ToolTip();
 
-        _lblGame = MakeStatusLabel(15, 28, width: 420);
+        // ──────────────────────────────────────────────────────────────
+        // Status group  — (12, 12) → 856×140
+        // ──────────────────────────────────────────────────────────────
+        var grpStatus = new GroupBox
+        {
+            Text = "状态",
+            Location = new Point(12, 12),
+            Size = new Size(856, 140),
+        };
+
+        _lblGame   = MakeStatusLabel(18, 32, width: 620);
         _btnBrowseGame = new Button
         {
             Text = "浏览...",
-            Location = new Point(445, 26),
-            Size = new Size(80, 26),
+            Location = new Point(670, 30),
+            Size = new Size(170, 32),
             FlatStyle = FlatStyle.System,
         };
         _btnBrowseGame.Click += (_, _) => OnBrowseGame();
-        var tt = new ToolTip();
         tt.SetToolTip(_btnBrowseGame, "如果自动检测没找到游戏 (或找错了), 点这里手动选游戏根目录");
 
-        _lblUE4SS = MakeStatusLabel(15, 58, width: 510);
-        _lblMod = MakeStatusLabel(15, 88, width: 510);
+        _lblUE4SS = MakeStatusLabel(18, 70, width: 822);
+        _lblMod   = MakeStatusLabel(18, 102, width: 822);
 
         grpStatus.Controls.AddRange([_lblGame, _btnBrowseGame, _lblUE4SS, _lblMod]);
         Controls.Add(grpStatus);
 
-        // --- Player count group ---
+        // ──────────────────────────────────────────────────────────────
+        // Player count group  — (12, 160) → 856×115
+        // ──────────────────────────────────────────────────────────────
         var grpPlayers = new GroupBox
         {
             Text = "人数上限  (拖动滑块即可立即生效, 无需重启游戏)",
-            Location = new Point(12, 136),
-            Size = new Size(536, 90),
+            Location = new Point(12, 160),
+            Size = new Size(856, 115),
         };
         _trkPlayers = new TrackBar
         {
-            Location = new Point(15, 28),
-            Size = new Size(390, 45),
+            Location = new Point(18, 32),
+            Size = new Size(640, 50),
             Minimum = 4,
             Maximum = 64,
             Value = 8,
             TickFrequency = 4,
+            LargeChange = 4,
         };
         _numPlayers = new NumericUpDown
         {
-            Location = new Point(420, 35),
-            Size = new Size(100, 30),
+            Location = new Point(680, 42),
+            Size = new Size(160, 36),
             Minimum = 4,
             Maximum = 64,
             Value = 8,
-            Font = new Font("Microsoft YaHei UI", 12F, FontStyle.Bold),
+            Font = new Font("Microsoft YaHei UI", 14F, FontStyle.Bold),
             TextAlign = HorizontalAlignment.Center,
         };
         _trkPlayers.ValueChanged += (_, _) => OnPlayerCountChanged(_trkPlayers.Value);
@@ -92,49 +103,66 @@ internal sealed class MainForm : Form
         grpPlayers.Controls.AddRange([_trkPlayers, _numPlayers]);
         Controls.Add(grpPlayers);
 
-        // --- Action buttons: 5 across, ~104px spacing, 100px wide each ---
-        _btnInstall = MakeButton("一键安装 / 更新", 12, 235, 100, Color.FromArgb(76, 175, 80), Color.White);
-        _btnInstall.Click += async (_, _) => await InstallAsync();
-        _btnUninstall = MakeButton("卸载", 116, 235, 100);
+        // ──────────────────────────────────────────────────────────────
+        // Action button row  — y=290, 5 buttons of 156×44 with 12px gaps
+        // ──────────────────────────────────────────────────────────────
+        const int ButtonY = 290;
+        const int ButtonW = 156;
+        const int ButtonH = 44;
+        const int ButtonGap = 12;
+        const int FirstX = 12;
+        int X(int idx) => FirstX + idx * (ButtonW + ButtonGap);
+
+        _btnInstall   = MakeButton("一键安装 / 更新", X(0), ButtonY, ButtonW, ButtonH, Color.FromArgb(76, 175, 80), Color.White);
+        _btnInstall.Click   += async (_, _) => await InstallAsync();
+        _btnUninstall = MakeButton("卸载", X(1), ButtonY, ButtonW, ButtonH);
         _btnUninstall.Click += async (_, _) => await UninstallAsync();
-        _btnLaunch = MakeButton("启动游戏", 220, 235, 100, Color.FromArgb(33, 150, 243), Color.White);
-        _btnLaunch.Click += (_, _) => LaunchGame();
-        _btnFolder = MakeButton("打开 Mod 目录", 324, 235, 100);
-        _btnFolder.Click += (_, _) => OpenModsFolder();
-        _btnAbout = MakeButton("关于", 428, 235, 100);
-        _btnAbout.Click += (_, _) => ShowAbout();
+        _btnLaunch    = MakeButton("启动游戏", X(2), ButtonY, ButtonW, ButtonH, Color.FromArgb(33, 150, 243), Color.White);
+        _btnLaunch.Click    += (_, _) => LaunchGame();
+        _btnFolder    = MakeButton("打开 Mod 目录", X(3), ButtonY, ButtonW, ButtonH);
+        _btnFolder.Click    += (_, _) => OpenModsFolder();
+        _btnAbout     = MakeButton("关于 / 更新", X(4), ButtonY, ButtonW, ButtonH);
+        _btnAbout.Click     += (_, _) => ShowAbout();
         Controls.AddRange([_btnInstall, _btnUninstall, _btnLaunch, _btnFolder, _btnAbout]);
 
-        // Tooltips
-        tt.SetToolTip(_btnInstall, "把 UE4SS (如果没装) 和 MoreCoop mod 装到游戏目录");
+        tt.SetToolTip(_btnInstall,   "把 UE4SS (如果没装) 和 MoreCoop mod 装到游戏目录");
         tt.SetToolTip(_btnUninstall, "卸载 MoreCoop (可选一起卸 UE4SS)");
-        tt.SetToolTip(_btnLaunch, $"通过 Steam 启动深海迷航 2 (steam://rungameid/{SubnauticaSteamAppId})");
-        tt.SetToolTip(_btnFolder, "在文件资源管理器里打开 ue4ss\\Mods 目录");
-        tt.SetToolTip(_btnAbout, "版本信息、许可、归属、日志文件位置");
+        tt.SetToolTip(_btnLaunch,    $"通过 Steam 启动深海迷航 2 (steam://rungameid/{SubnauticaSteamAppId})");
+        tt.SetToolTip(_btnFolder,    "在文件资源管理器里打开 ue4ss\\Mods 目录");
+        tt.SetToolTip(_btnAbout,     "版本信息、查看 GitHub 最新版、清除手选游戏路径、日志文件位置");
 
-        // --- Log box ---
-        var grpLog = new GroupBox { Text = "日志  (同时写到 %APPDATA%\\MoreCoop\\manager.log)", Location = new Point(12, 285), Size = new Size(536, 170) };
+        // ──────────────────────────────────────────────────────────────
+        // Log group  — (12, 348) → 856×240
+        // ──────────────────────────────────────────────────────────────
+        var grpLog = new GroupBox
+        {
+            Text = "日志  (同时写到 %APPDATA%\\MoreCoop\\manager.log)",
+            Location = new Point(12, 348),
+            Size = new Size(856, 240),
+        };
         _txtLog = new TextBox
         {
-            Location = new Point(10, 22),
-            Size = new Size(516, 140),
+            Location = new Point(12, 26),
+            Size = new Size(832, 204),
             Multiline = true,
             ReadOnly = true,
             ScrollBars = ScrollBars.Vertical,
             BackColor = Color.White,
-            Font = new Font("Consolas", 9F),
+            Font = new Font("Consolas", 10F),
         };
         grpLog.Controls.Add(_txtLog);
         Controls.Add(grpLog);
 
-        // Poll the game process every 3s so [启动游戏] / [一键安装] / [卸载] reflect reality
+        // ──────────────────────────────────────────────────────────────
+        // Lifecycle
+        // ──────────────────────────────────────────────────────────────
         _processCheckTimer = new System.Windows.Forms.Timer { Interval = 3000 };
         _processCheckTimer.Tick += (_, _) => UpdateGameRunningState();
 
         Load += (_, _) =>
         {
             FileLog.Init();
-            Log($"MoreCoop Manager v1.5.0 启动");
+            Log($"MoreCoop Manager v1.6.0 启动");
             Log($"日志文件: {FileLog.LogPath}");
             RefreshAll();
             _processCheckTimer.Start();
@@ -142,9 +170,9 @@ internal sealed class MainForm : Form
         FormClosing += (_, _) => _processCheckTimer.Stop();
     }
 
-    // ----------------------------------------------------------------
+    // ────────────────────────────────────────────────────────────────
     // State refresh
-    // ----------------------------------------------------------------
+    // ────────────────────────────────────────────────────────────────
     private void RefreshAll()
     {
         var gamePath = SteamFinder.FindGamePath();
@@ -224,9 +252,9 @@ internal sealed class MainForm : Form
         catch { return false; }
     }
 
-    // ----------------------------------------------------------------
+    // ────────────────────────────────────────────────────────────────
     // Manual game folder selection
-    // ----------------------------------------------------------------
+    // ────────────────────────────────────────────────────────────────
     private void OnBrowseGame()
     {
         using var dlg = new FolderBrowserDialog
@@ -266,9 +294,9 @@ internal sealed class MainForm : Form
         RefreshAll();
     }
 
-    // ----------------------------------------------------------------
+    // ────────────────────────────────────────────────────────────────
     // Launch game via Steam protocol
-    // ----------------------------------------------------------------
+    // ────────────────────────────────────────────────────────────────
     private void LaunchGame()
     {
         if (IsGameRunning())
@@ -290,9 +318,9 @@ internal sealed class MainForm : Form
         }
     }
 
-    // ----------------------------------------------------------------
+    // ────────────────────────────────────────────────────────────────
     // Slider live save
-    // ----------------------------------------------------------------
+    // ────────────────────────────────────────────────────────────────
     private void OnPlayerCountChanged(int value)
     {
         if (_suppressSliderEvents) return;
@@ -317,9 +345,9 @@ internal sealed class MainForm : Form
         }
     }
 
-    // ----------------------------------------------------------------
+    // ────────────────────────────────────────────────────────────────
     // Install / Uninstall (refuse if game is running)
-    // ----------------------------------------------------------------
+    // ────────────────────────────────────────────────────────────────
     private async Task InstallAsync()
     {
         if (_installer is null) return;
@@ -396,7 +424,7 @@ internal sealed class MainForm : Form
         if (!IsGameRunning()) return false;
         MessageBox.Show(this,
             $"深海迷航 2 正在运行, 无法{action}。\r\n\r\n请先退出游戏 (在主菜单按 Alt+F4 或退到桌面), 再操作。\r\n\r\n" +
-            "这是为了防止文件被锁住导致{action}失败。",
+            $"这是为了防止文件被锁住导致{action}失败。",
             "游戏运行中", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         return true;
     }
@@ -421,7 +449,7 @@ internal sealed class MainForm : Form
             : $"\r\n\r\n当前手选的游戏目录:\r\n{savedPath}";
 
         var msg = $"""
-                   MoreCoop Manager v1.5.0
+                   MoreCoop Manager v1.6.0
 
                    深海迷航 2 多人人数解锁补丁 (真·一键安装)
 
@@ -432,6 +460,10 @@ internal sealed class MainForm : Form
                    ▸ 一键 Steam 启动游戏验证
                    ▸ 完全可逆, 卸载干净
 
+                   ─── 永久最新版链接 ───
+                   {LatestReleaseUrl}
+                   (这个 URL 永远指向 GitHub 上最新版, 保存这个分享给朋友)
+
                    ─── 许可与归属 ───
                    本程序: GPL-3.0  (wuha-like-sleep)
                    补丁原理: Zeusfail/Too-Many-Divers v1.2.0 (GPL-3.0)
@@ -440,14 +472,14 @@ internal sealed class MainForm : Form
                    日志文件:
                    {FileLog.LogPath}{savedNote}
 
-                   [是] 打开 GitHub 仓库
+                   [是] 打开 GitHub 上的最新版页面 (检查更新)
                    {(savedPath is null ? "[否] 关闭" : "[否] 清除手选路径, 改回自动检测")}
                    """;
         var result = MessageBox.Show(this, msg, "关于 MoreCoop Manager",
             MessageBoxButtons.YesNo, MessageBoxIcon.Information);
         if (result == DialogResult.Yes)
         {
-            OpenUrl(GithubUrl);
+            OpenUrl(LatestReleaseUrl);
         }
         else if (savedPath is not null)
         {
@@ -457,9 +489,9 @@ internal sealed class MainForm : Form
         }
     }
 
-    // ----------------------------------------------------------------
+    // ────────────────────────────────────────────────────────────────
     // Helpers
-    // ----------------------------------------------------------------
+    // ────────────────────────────────────────────────────────────────
     private void Log(string message)
     {
         var line = $"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}";
@@ -468,21 +500,22 @@ internal sealed class MainForm : Form
         FileLog.Append(message);
     }
 
-    private static Label MakeStatusLabel(int x, int y, int width = 510) => new()
+    private static Label MakeStatusLabel(int x, int y, int width = 822) => new()
     {
         Location = new Point(x, y),
-        Size = new Size(width, 22),
+        Size = new Size(width, 26),
         Text = "(检测中...)",
         AutoEllipsis = true,
     };
 
-    private static Button MakeButton(string text, int x, int y, int width = 128, Color? bg = null, Color? fg = null)
+    private static Button MakeButton(string text, int x, int y, int width = 156, int height = 44,
+                                     Color? bg = null, Color? fg = null)
     {
         var b = new Button
         {
             Text = text,
             Location = new Point(x, y),
-            Size = new Size(width, 40),
+            Size = new Size(width, height),
             FlatStyle = FlatStyle.System,
         };
         if (bg.HasValue) { b.BackColor = bg.Value; b.FlatStyle = FlatStyle.Flat; }
