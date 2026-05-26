@@ -4,24 +4,24 @@ namespace MoreCoopManager;
 
 /// <summary>
 /// Single-window GUI for installing MoreCoop. As of v1.4 the manager bundles
-/// UE4SS itself, so the user never has to leave this app for anything except
-/// owning the game.
-///
-/// State refresh happens on launch, after install, after uninstall, and after
-/// the user picks a new game folder. MaxPlayers slider changes are saved to
-/// settings.json on every edit — UE4SS hot-reloads, no game restart.
+/// UE4SS itself; as of v1.5 it also detects whether the game is currently
+/// running (refuses to install/uninstall mid-session), can launch the game
+/// via Steam, and mirrors every log line to %APPDATA%\MoreCoop\manager.log.
 /// </summary>
 internal sealed class MainForm : Form
 {
-    private const string Title = "MoreCoop Manager - 深海迷航 2 多人解锁 v1.4.0";
+    private const string Title = "MoreCoop Manager - 深海迷航 2 多人解锁 v1.5.0";
     private const string GithubUrl = "https://github.com/wuha-like-sleep/SubnauticaMoreCoop";
+    private const int SubnauticaSteamAppId = 1962700;
+    private const string GameProcessName = "Subnautica2-Win64-Shipping";
 
     private readonly Label _lblGame, _lblUE4SS, _lblMod;
     private readonly Button _btnBrowseGame;
     private readonly TrackBar _trkPlayers;
     private readonly NumericUpDown _numPlayers;
-    private readonly Button _btnInstall, _btnUninstall, _btnFolder, _btnAbout;
+    private readonly Button _btnInstall, _btnUninstall, _btnLaunch, _btnFolder, _btnAbout;
     private readonly TextBox _txtLog;
+    private readonly System.Windows.Forms.Timer _processCheckTimer;
 
     private ModInstaller? _installer;
     private bool _suppressSliderEvents;
@@ -34,6 +34,11 @@ internal sealed class MainForm : Form
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         Font = new Font("Microsoft YaHei UI", 9F);
+
+        // The <ApplicationIcon> in csproj sets the Win32 PE icon (taskbar / explorer);
+        // ExtractAssociatedIcon pulls it back out so the form's title-bar icon matches.
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); }
+        catch { /* fall back to default */ }
 
         // --- Status group ---
         var grpStatus = new GroupBox { Text = "状态", Location = new Point(12, 8), Size = new Size(536, 120) };
@@ -87,19 +92,28 @@ internal sealed class MainForm : Form
         grpPlayers.Controls.AddRange([_trkPlayers, _numPlayers]);
         Controls.Add(grpPlayers);
 
-        // --- Action buttons ---
-        _btnInstall = MakeButton("一键安装 / 更新", 12, 235, Color.FromArgb(76, 175, 80), Color.White);
+        // --- Action buttons: 5 across, ~104px spacing, 100px wide each ---
+        _btnInstall = MakeButton("一键安装 / 更新", 12, 235, 100, Color.FromArgb(76, 175, 80), Color.White);
         _btnInstall.Click += async (_, _) => await InstallAsync();
-        _btnUninstall = MakeButton("卸载", 144, 235);
+        _btnUninstall = MakeButton("卸载", 116, 235, 100);
         _btnUninstall.Click += async (_, _) => await UninstallAsync();
-        _btnFolder = MakeButton("打开 Mod 目录", 276, 235);
+        _btnLaunch = MakeButton("启动游戏", 220, 235, 100, Color.FromArgb(33, 150, 243), Color.White);
+        _btnLaunch.Click += (_, _) => LaunchGame();
+        _btnFolder = MakeButton("打开 Mod 目录", 324, 235, 100);
         _btnFolder.Click += (_, _) => OpenModsFolder();
-        _btnAbout = MakeButton("关于", 408, 235);
+        _btnAbout = MakeButton("关于", 428, 235, 100);
         _btnAbout.Click += (_, _) => ShowAbout();
-        Controls.AddRange([_btnInstall, _btnUninstall, _btnFolder, _btnAbout]);
+        Controls.AddRange([_btnInstall, _btnUninstall, _btnLaunch, _btnFolder, _btnAbout]);
+
+        // Tooltips
+        tt.SetToolTip(_btnInstall, "把 UE4SS (如果没装) 和 MoreCoop mod 装到游戏目录");
+        tt.SetToolTip(_btnUninstall, "卸载 MoreCoop (可选一起卸 UE4SS)");
+        tt.SetToolTip(_btnLaunch, $"通过 Steam 启动深海迷航 2 (steam://rungameid/{SubnauticaSteamAppId})");
+        tt.SetToolTip(_btnFolder, "在文件资源管理器里打开 ue4ss\\Mods 目录");
+        tt.SetToolTip(_btnAbout, "版本信息、许可、归属、日志文件位置");
 
         // --- Log box ---
-        var grpLog = new GroupBox { Text = "日志", Location = new Point(12, 285), Size = new Size(536, 170) };
+        var grpLog = new GroupBox { Text = "日志  (同时写到 %APPDATA%\\MoreCoop\\manager.log)", Location = new Point(12, 285), Size = new Size(536, 170) };
         _txtLog = new TextBox
         {
             Location = new Point(10, 22),
@@ -113,7 +127,19 @@ internal sealed class MainForm : Form
         grpLog.Controls.Add(_txtLog);
         Controls.Add(grpLog);
 
-        Load += (_, _) => RefreshAll();
+        // Poll the game process every 3s so [启动游戏] / [一键安装] / [卸载] reflect reality
+        _processCheckTimer = new System.Windows.Forms.Timer { Interval = 3000 };
+        _processCheckTimer.Tick += (_, _) => UpdateGameRunningState();
+
+        Load += (_, _) =>
+        {
+            FileLog.Init();
+            Log($"MoreCoop Manager v1.5.0 启动");
+            Log($"日志文件: {FileLog.LogPath}");
+            RefreshAll();
+            _processCheckTimer.Start();
+        };
+        FormClosing += (_, _) => _processCheckTimer.Stop();
     }
 
     // ----------------------------------------------------------------
@@ -131,6 +157,7 @@ internal sealed class MainForm : Form
             _btnInstall.Enabled = false;
             _btnUninstall.Enabled = false;
             _btnFolder.Enabled = false;
+            UpdateGameRunningState();
             return;
         }
 
@@ -162,9 +189,39 @@ internal sealed class MainForm : Form
             SetStatus(_lblMod, "MoreCoop: ✗ 未安装", false);
         }
 
-        _btnInstall.Enabled = true;
-        _btnUninstall.Enabled = _installer.ModInstalled;
-        _btnFolder.Enabled = _installer.UE4SSInstalled;
+        UpdateGameRunningState();
+    }
+
+    /// <summary>
+    /// Polled every 3 seconds. If the game is running we lock install/uninstall
+    /// to prevent file-lock errors. Launch button also reflects state.
+    /// </summary>
+    private void UpdateGameRunningState()
+    {
+        var running = IsGameRunning();
+
+        if (running)
+        {
+            _btnInstall.Enabled = false;
+            _btnUninstall.Enabled = false;
+            _btnLaunch.Enabled = false;
+            _btnLaunch.Text = "游戏运行中";
+        }
+        else
+        {
+            _btnInstall.Enabled = _installer is not null;
+            _btnUninstall.Enabled = _installer?.ModInstalled == true;
+            _btnLaunch.Enabled = true;
+            _btnLaunch.Text = "启动游戏";
+        }
+
+        _btnFolder.Enabled = _installer?.UE4SSInstalled == true;
+    }
+
+    private static bool IsGameRunning()
+    {
+        try { return Process.GetProcessesByName(GameProcessName).Length > 0; }
+        catch { return false; }
     }
 
     // ----------------------------------------------------------------
@@ -210,6 +267,30 @@ internal sealed class MainForm : Form
     }
 
     // ----------------------------------------------------------------
+    // Launch game via Steam protocol
+    // ----------------------------------------------------------------
+    private void LaunchGame()
+    {
+        if (IsGameRunning())
+        {
+            Log("游戏已经在运行了");
+            return;
+        }
+        try
+        {
+            Log($"通过 Steam 启动游戏: steam://rungameid/{SubnauticaSteamAppId}");
+            Process.Start(new ProcessStartInfo($"steam://rungameid/{SubnauticaSteamAppId}") { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Log($"启动失败: {ex.Message}");
+            MessageBox.Show(this,
+                $"无法通过 Steam 启动游戏:\r\n{ex.Message}\r\n\r\n请确认 Steam 已运行, 或者手动启动深海迷航 2。",
+                "启动失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    // ----------------------------------------------------------------
     // Slider live save
     // ----------------------------------------------------------------
     private void OnPlayerCountChanged(int value)
@@ -237,11 +318,12 @@ internal sealed class MainForm : Form
     }
 
     // ----------------------------------------------------------------
-    // Install / Uninstall
+    // Install / Uninstall (refuse if game is running)
     // ----------------------------------------------------------------
     private async Task InstallAsync()
     {
         if (_installer is null) return;
+        if (RefuseIfGameRunning("安装")) return;
 
         _btnInstall.Enabled = false;
         _btnUninstall.Enabled = false;
@@ -250,7 +332,6 @@ internal sealed class MainForm : Form
 
         try
         {
-            // Marshal progress messages back to UI thread via the Log helper
             await Task.Run(() => _installer.Install(target, msg => Log(msg)));
             Log("✓ 全部完成! 启动游戏后, 按 Insert 打开 UE4SS 控制台应看到 [MoreCoop] 加载日志");
             RefreshAll();
@@ -266,10 +347,9 @@ internal sealed class MainForm : Form
     private async Task UninstallAsync()
     {
         if (_installer is null || !_installer.ModInstalled) return;
+        if (RefuseIfGameRunning("卸载")) return;
 
         var alsoRemoveUE4SS = false;
-        var promptText = "确认卸载 MoreCoop?\r\n\r\n" +
-                         "本操作会删除 mod 文件, 游戏将恢复 4 人上限。";
 
         if (_installer.UE4SSInstalledByUs)
         {
@@ -285,7 +365,8 @@ internal sealed class MainForm : Form
         }
         else
         {
-            var result = MessageBox.Show(this, promptText,
+            var result = MessageBox.Show(this,
+                "确认卸载 MoreCoop?\r\n\r\n本操作会删除 mod 文件, 游戏将恢复 4 人上限。",
                 "确认卸载", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
             if (result != DialogResult.Yes) return;
         }
@@ -310,6 +391,16 @@ internal sealed class MainForm : Form
         }
     }
 
+    private bool RefuseIfGameRunning(string action)
+    {
+        if (!IsGameRunning()) return false;
+        MessageBox.Show(this,
+            $"深海迷航 2 正在运行, 无法{action}。\r\n\r\n请先退出游戏 (在主菜单按 Alt+F4 或退到桌面), 再操作。\r\n\r\n" +
+            "这是为了防止文件被锁住导致{action}失败。",
+            "游戏运行中", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return true;
+    }
+
     private void OpenModsFolder()
     {
         if (_installer is null) return;
@@ -330,21 +421,24 @@ internal sealed class MainForm : Form
             : $"\r\n\r\n当前手选的游戏目录:\r\n{savedPath}";
 
         var msg = $"""
-                   MoreCoop Manager v1.4.0
+                   MoreCoop Manager v1.5.0
 
-                   深海迷航 2 多人人数解锁补丁 (一键安装)
+                   深海迷航 2 多人人数解锁补丁 (真·一键安装)
 
                    ▸ 自动检测游戏 + UE4SS + mod 状态
                    ▸ 内嵌 UE4SS, 全程不联网, 不用单独下载
                    ▸ 人数 4–64, 拖滑块热生效, 不用关游戏
+                   ▸ 检测游戏是否运行, 防止文件锁错误
+                   ▸ 一键 Steam 启动游戏验证
                    ▸ 完全可逆, 卸载干净
-
-                   ▸ 只有房主装就行, 朋友用原版可加入
 
                    ─── 许可与归属 ───
                    本程序: GPL-3.0  (wuha-like-sleep)
                    补丁原理: Zeusfail/Too-Many-Divers v1.2.0 (GPL-3.0)
-                   UE4SS: MIT  (Narknon, UE4SS-RE/Subnautica2Modding){savedNote}
+                   UE4SS: MIT  (Narknon, Subnautica2Modding)
+
+                   日志文件:
+                   {FileLog.LogPath}{savedNote}
 
                    [是] 打开 GitHub 仓库
                    {(savedPath is null ? "[否] 关闭" : "[否] 清除手选路径, 改回自动检测")}
@@ -371,6 +465,7 @@ internal sealed class MainForm : Form
         var line = $"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}";
         if (_txtLog.InvokeRequired) _txtLog.Invoke(() => _txtLog.AppendText(line));
         else _txtLog.AppendText(line);
+        FileLog.Append(message);
     }
 
     private static Label MakeStatusLabel(int x, int y, int width = 510) => new()
@@ -381,13 +476,13 @@ internal sealed class MainForm : Form
         AutoEllipsis = true,
     };
 
-    private static Button MakeButton(string text, int x, int y, Color? bg = null, Color? fg = null)
+    private static Button MakeButton(string text, int x, int y, int width = 128, Color? bg = null, Color? fg = null)
     {
         var b = new Button
         {
             Text = text,
             Location = new Point(x, y),
-            Size = new Size(128, 40),
+            Size = new Size(width, 40),
             FlatStyle = FlatStyle.System,
         };
         if (bg.HasValue) { b.BackColor = bg.Value; b.FlatStyle = FlatStyle.Flat; }

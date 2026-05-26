@@ -9,7 +9,7 @@ SetCompressor /SOLID lzma
 ; App metadata
 ; ----------------------------------------------------------------
 !define APP_NAME      "MoreCoop"
-!define APP_VERSION   "1.4.0"
+!define APP_VERSION   "1.5.0"
 !define APP_PUBLISHER "wuha-like-sleep"
 !define APP_URL       "https://github.com/wuha-like-sleep/SubnauticaMoreCoop"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}"
@@ -35,8 +35,9 @@ Var MODS_TXT
 !include "FileFunc.nsh"
 !include "WordFunc.nsh"   ; provides ${WordFind}, ${WordReplace}
 
-!define MUI_ICON   "${NSISDIR}\Contrib\Graphics\Icons\modern-install.ico"
-!define MUI_UNICON "${NSISDIR}\Contrib\Graphics\Icons\modern-uninstall.ico"
+; Use our app icon if present, otherwise NSIS default
+!define MUI_ICON   "manager-app\icon.ico"
+!define MUI_UNICON "manager-app\icon.ico"
 !define MUI_ABORTWARNING
 
 ; Installer pages
@@ -125,6 +126,14 @@ Section "Install" SecInstall
     StrCpy $MOD_DIR   "$UE4SS_DIR\Mods\MoreCoop"
     StrCpy $MODS_TXT  "$UE4SS_DIR\Mods\mods.txt"
 
+    ; Refuse if the game is running (would lock the dwmapi.dll proxy)
+    nsExec::ExecToStack 'cmd /c tasklist /FI "IMAGENAME eq Subnautica2-Win64-Shipping.exe" | findstr /I /C:"Subnautica2-Win64-Shipping"'
+    Pop $0
+    ${If} $0 == "0"
+        MessageBox MB_ICONSTOP|MB_OK "深海迷航 2 正在运行, 无法安装。$\r$\n$\r$\n请先退出游戏 (退到桌面), 再运行安装程序。"
+        Abort
+    ${EndIf}
+
     ; Verify game directory looks right
     ${IfNot} ${FileExists} "${WIN64_DIR}\*.*"
         MessageBox MB_ICONSTOP|MB_OK "游戏目录看起来不对, 找不到:$\r$\n${WIN64_DIR}$\r$\n$\r$\n请确认你选的是深海迷航 2 的根目录。"
@@ -202,6 +211,14 @@ SectionEnd
 ; Uninstall Section
 ; ----------------------------------------------------------------
 Section "Uninstall"
+
+    ; Refuse if the game is running
+    nsExec::ExecToStack 'cmd /c tasklist /FI "IMAGENAME eq Subnautica2-Win64-Shipping.exe" | findstr /I /C:"Subnautica2-Win64-Shipping"'
+    Pop $0
+    ${If} $0 == "0"
+        MessageBox MB_ICONSTOP|MB_OK "深海迷航 2 正在运行, 无法卸载。$\r$\n$\r$\n请先退出游戏, 再运行卸载程序。"
+        Abort
+    ${EndIf}
 
     ; $INSTDIR is the dir where uninstall.exe lives = the mod folder
     StrCpy $MODS_TXT "$INSTDIR\..\mods.txt"

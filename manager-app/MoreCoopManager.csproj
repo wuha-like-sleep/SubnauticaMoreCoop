@@ -12,10 +12,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>icon.ico</ApplicationIcon>
 
-    <Version>1.4.0</Version>
-    <AssemblyVersion>1.4.0.0</AssemblyVersion>
-    <FileVersion>1.4.0.0</FileVersion>
+    <Version>1.5.0</Version>
+    <AssemblyVersion>1.5.0.0</AssemblyVersion>
+    <FileVersion>1.5.0.0</FileVersion>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <Company>wuha-like-sleep</Company>
     <Product>MoreCoop Manager</Product>
