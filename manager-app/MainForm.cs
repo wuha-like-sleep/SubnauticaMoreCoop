@@ -3,155 +3,211 @@ using System.Diagnostics;
 namespace MoreCoopManager;
 
 /// <summary>
-/// Single-window GUI for installing MoreCoop.
-///
-/// v1.4 bundled UE4SS, v1.5 added game-running guard / launch button / file log,
-/// v1.6 enlarges the window from 560×470 to 880×600 with bigger fonts so it
-/// stops feeling cramped on modern displays.
+/// Main window. v1.7 rewrite:
+///   - Dark "deep sea" theme via Theme.cs + ModernControls.cs (CardPanel, ModernButton, StatusRow)
+///   - Resizable (anchors set so cards stretch horizontally, log fills vertically)
+///   - Background update check via UpdateChecker.cs; if a newer GitHub release
+///     exists, the [关于 / 更新] button is highlighted and the About dialog
+///     gains a 更新 Mod 脚本 action that downloads main.lua from the new tag
+///     and overwrites the local one (UE4SS hot-reloads on next session).
 /// </summary>
 internal sealed class MainForm : Form
 {
-    private const string Title = "MoreCoop Manager - 深海迷航 2 多人解锁 v1.6.0";
+    private const string Title = "MoreCoop Manager · 深海迷航 2 多人解锁";
     private const string GithubUrl = "https://github.com/wuha-like-sleep/SubnauticaMoreCoop";
-    private const string LatestReleaseUrl = "https://github.com/wuha-like-sleep/SubnauticaMoreCoop/releases/latest";
     private const int SubnauticaSteamAppId = 1962700;
     private const string GameProcessName = "Subnautica2-Win64-Shipping";
 
-    private readonly Label _lblGame, _lblUE4SS, _lblMod;
-    private readonly Button _btnBrowseGame;
+    private readonly StatusRow _rowGame, _rowUE4SS, _rowMod;
+    private readonly ModernButton _btnBrowseGame;
     private readonly TrackBar _trkPlayers;
     private readonly NumericUpDown _numPlayers;
-    private readonly Button _btnInstall, _btnUninstall, _btnLaunch, _btnFolder, _btnAbout;
+    private readonly ModernButton _btnInstall, _btnUninstall, _btnLaunch, _btnFolder, _btnAbout;
     private readonly TextBox _txtLog;
+    private readonly Color _aboutBaseColor;
     private readonly System.Windows.Forms.Timer _processCheckTimer;
 
     private ModInstaller? _installer;
     private bool _suppressSliderEvents;
+    private UpdateChecker.UpdateInfo? _availableUpdate;
 
     public MainForm()
     {
-        Text = Title;
-        ClientSize = new Size(880, 600);
+        Text = $"{Title}  v{UpdateChecker.CurrentVersion}";
+        ClientSize = new Size(880, 620);
+        MinimumSize = new Size(760, 540);
         StartPosition = FormStartPosition.CenterScreen;
-        FormBorderStyle = FormBorderStyle.FixedSingle;
-        MaximizeBox = false;
-        Font = new Font("Microsoft YaHei UI", 10F);
+        FormBorderStyle = FormBorderStyle.Sizable;
+        BackColor = Theme.Background;
+        ForeColor = Theme.TextPrimary;
+        Font = Theme.BodyFont;
+        Padding = new Padding(14);
 
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); }
-        catch { /* fall back to default */ }
+        catch { /* fall back */ }
 
-        var tt = new ToolTip();
+        var tt = new ToolTip { BackColor = Theme.CardBackground, ForeColor = Theme.TextPrimary };
 
         // ──────────────────────────────────────────────────────────────
-        // Status group  — (12, 12) → 856×140
+        // STATUS card
         // ──────────────────────────────────────────────────────────────
-        var grpStatus = new GroupBox
+        var cardStatus = new CardPanel
         {
-            Text = "状态",
-            Location = new Point(12, 12),
-            Size = new Size(856, 140),
+            CardTitle = "状态",
+            Location = new Point(14, 14),
+            Size = new Size(ClientSize.Width - 28, 130),
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
         };
 
-        _lblGame   = MakeStatusLabel(18, 32, width: 620);
-        _btnBrowseGame = new Button
+        _rowGame = new StatusRow
         {
-            Text = "浏览...",
-            Location = new Point(670, 30),
-            Size = new Size(170, 32),
-            FlatStyle = FlatStyle.System,
+            Label = "游戏:",
+            Value = "(检测中...)",
+            Location = new Point(CardPanel.InnerPadding, CardPanel.HeaderHeight + 8),
+            Size = new Size(cardStatus.Width - 2 * CardPanel.InnerPadding - 130, 26),
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
         };
+
+        _btnBrowseGame = ModernButton.Secondary("浏览...");
+        _btnBrowseGame.Size = new Size(110, 30);
+        _btnBrowseGame.Location = new Point(cardStatus.Width - CardPanel.InnerPadding - 110, CardPanel.HeaderHeight + 6);
+        _btnBrowseGame.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         _btnBrowseGame.Click += (_, _) => OnBrowseGame();
         tt.SetToolTip(_btnBrowseGame, "如果自动检测没找到游戏 (或找错了), 点这里手动选游戏根目录");
 
-        _lblUE4SS = MakeStatusLabel(18, 70, width: 822);
-        _lblMod   = MakeStatusLabel(18, 102, width: 822);
-
-        grpStatus.Controls.AddRange([_lblGame, _btnBrowseGame, _lblUE4SS, _lblMod]);
-        Controls.Add(grpStatus);
-
-        // ──────────────────────────────────────────────────────────────
-        // Player count group  — (12, 160) → 856×115
-        // ──────────────────────────────────────────────────────────────
-        var grpPlayers = new GroupBox
+        _rowUE4SS = new StatusRow
         {
-            Text = "人数上限  (拖动滑块即可立即生效, 无需重启游戏)",
-            Location = new Point(12, 160),
-            Size = new Size(856, 115),
+            Label = "UE4SS:",
+            Value = "(检测中...)",
+            Location = new Point(CardPanel.InnerPadding, CardPanel.HeaderHeight + 42),
+            Size = new Size(cardStatus.Width - 2 * CardPanel.InnerPadding, 26),
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
         };
+
+        _rowMod = new StatusRow
+        {
+            Label = "MoreCoop:",
+            Value = "(检测中...)",
+            Location = new Point(CardPanel.InnerPadding, CardPanel.HeaderHeight + 70),
+            Size = new Size(cardStatus.Width - 2 * CardPanel.InnerPadding, 26),
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+        };
+
+        cardStatus.Controls.AddRange([_rowGame, _btnBrowseGame, _rowUE4SS, _rowMod]);
+        Controls.Add(cardStatus);
+
+        // ──────────────────────────────────────────────────────────────
+        // PLAYER COUNT card
+        // ──────────────────────────────────────────────────────────────
+        var cardPlayers = new CardPanel
+        {
+            CardTitle = "人数上限   (拖动滑块即可立即生效, 无需重启游戏)",
+            Location = new Point(14, 156),
+            Size = new Size(ClientSize.Width - 28, 125),
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+        };
+
         _trkPlayers = new TrackBar
         {
-            Location = new Point(18, 32),
-            Size = new Size(640, 50),
+            Location = new Point(CardPanel.InnerPadding, CardPanel.HeaderHeight + 8),
+            Size = new Size(cardPlayers.Width - 2 * CardPanel.InnerPadding - 180, 50),
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
             Minimum = 4,
             Maximum = 64,
             Value = 8,
             TickFrequency = 4,
             LargeChange = 4,
+            BackColor = Theme.CardBackground,
         };
+
         _numPlayers = new NumericUpDown
         {
-            Location = new Point(680, 42),
-            Size = new Size(160, 36),
+            Location = new Point(cardPlayers.Width - CardPanel.InnerPadding - 160, CardPanel.HeaderHeight + 18),
+            Size = new Size(160, 38),
+            Anchor = AnchorStyles.Top | AnchorStyles.Right,
             Minimum = 4,
             Maximum = 64,
             Value = 8,
-            Font = new Font("Microsoft YaHei UI", 14F, FontStyle.Bold),
+            Font = Theme.BigFont,
             TextAlign = HorizontalAlignment.Center,
+            BackColor = Theme.InputBackground,
+            ForeColor = Theme.TextPrimary,
+            BorderStyle = BorderStyle.FixedSingle,
         };
+
         _trkPlayers.ValueChanged += (_, _) => OnPlayerCountChanged(_trkPlayers.Value);
         _numPlayers.ValueChanged += (_, _) => OnPlayerCountChanged((int)_numPlayers.Value);
-        grpPlayers.Controls.AddRange([_trkPlayers, _numPlayers]);
-        Controls.Add(grpPlayers);
+        cardPlayers.Controls.AddRange([_trkPlayers, _numPlayers]);
+        Controls.Add(cardPlayers);
 
         // ──────────────────────────────────────────────────────────────
-        // Action button row  — y=290, 5 buttons of 156×44 with 12px gaps
+        // BUTTON row (no card, just a panel)
         // ──────────────────────────────────────────────────────────────
-        const int ButtonY = 290;
-        const int ButtonW = 156;
-        const int ButtonH = 44;
-        const int ButtonGap = 12;
-        const int FirstX = 12;
-        int X(int idx) => FirstX + idx * (ButtonW + ButtonGap);
+        var btnPanel = new Panel
+        {
+            Location = new Point(14, 293),
+            Size = new Size(ClientSize.Width - 28, 50),
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+            BackColor = Theme.Background,
+        };
 
-        _btnInstall   = MakeButton("一键安装 / 更新", X(0), ButtonY, ButtonW, ButtonH, Color.FromArgb(76, 175, 80), Color.White);
+        const int btnW = 156, btnH = 44, btnGap = 12;
+        _btnInstall   = ModernButton.Success("一键安装 / 更新");
+        _btnUninstall = ModernButton.Secondary("卸载");
+        _btnLaunch    = ModernButton.Accent("启动游戏");
+        _btnFolder    = ModernButton.Secondary("打开 Mod 目录");
+        _btnAbout     = ModernButton.Secondary("关于 / 更新");
+        _aboutBaseColor = _btnAbout.BackColor;
+
+        var buttons = new ModernButton[] { _btnInstall, _btnUninstall, _btnLaunch, _btnFolder, _btnAbout };
+        for (int i = 0; i < buttons.Length; i++)
+        {
+            buttons[i].Size = new Size(btnW, btnH);
+            buttons[i].Location = new Point(i * (btnW + btnGap), 3);
+            btnPanel.Controls.Add(buttons[i]);
+        }
+
         _btnInstall.Click   += async (_, _) => await InstallAsync();
-        _btnUninstall = MakeButton("卸载", X(1), ButtonY, ButtonW, ButtonH);
         _btnUninstall.Click += async (_, _) => await UninstallAsync();
-        _btnLaunch    = MakeButton("启动游戏", X(2), ButtonY, ButtonW, ButtonH, Color.FromArgb(33, 150, 243), Color.White);
         _btnLaunch.Click    += (_, _) => LaunchGame();
-        _btnFolder    = MakeButton("打开 Mod 目录", X(3), ButtonY, ButtonW, ButtonH);
         _btnFolder.Click    += (_, _) => OpenModsFolder();
-        _btnAbout     = MakeButton("关于 / 更新", X(4), ButtonY, ButtonW, ButtonH);
         _btnAbout.Click     += (_, _) => ShowAbout();
-        Controls.AddRange([_btnInstall, _btnUninstall, _btnLaunch, _btnFolder, _btnAbout]);
 
         tt.SetToolTip(_btnInstall,   "把 UE4SS (如果没装) 和 MoreCoop mod 装到游戏目录");
         tt.SetToolTip(_btnUninstall, "卸载 MoreCoop (可选一起卸 UE4SS)");
         tt.SetToolTip(_btnLaunch,    $"通过 Steam 启动深海迷航 2 (steam://rungameid/{SubnauticaSteamAppId})");
         tt.SetToolTip(_btnFolder,    "在文件资源管理器里打开 ue4ss\\Mods 目录");
-        tt.SetToolTip(_btnAbout,     "版本信息、查看 GitHub 最新版、清除手选游戏路径、日志文件位置");
+        tt.SetToolTip(_btnAbout,     "版本信息、检查 GitHub 最新版、更新 mod 脚本、日志文件位置");
+
+        Controls.Add(btnPanel);
 
         // ──────────────────────────────────────────────────────────────
-        // Log group  — (12, 348) → 856×240
+        // LOG card (fills remaining vertical space)
         // ──────────────────────────────────────────────────────────────
-        var grpLog = new GroupBox
+        var cardLog = new CardPanel
         {
-            Text = "日志  (同时写到 %APPDATA%\\MoreCoop\\manager.log)",
-            Location = new Point(12, 348),
-            Size = new Size(856, 240),
+            CardTitle = "日志   (同时写到 %APPDATA%\\MoreCoop\\manager.log)",
+            Location = new Point(14, 355),
+            Size = new Size(ClientSize.Width - 28, ClientSize.Height - 355 - 14),
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom,
         };
+
         _txtLog = new TextBox
         {
-            Location = new Point(12, 26),
-            Size = new Size(832, 204),
+            Location = new Point(CardPanel.InnerPadding, CardPanel.HeaderHeight + 6),
+            Size = new Size(cardLog.Width - 2 * CardPanel.InnerPadding,
+                            cardLog.Height - CardPanel.HeaderHeight - 6 - CardPanel.InnerPadding),
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom,
             Multiline = true,
             ReadOnly = true,
             ScrollBars = ScrollBars.Vertical,
-            BackColor = Color.White,
-            Font = new Font("Consolas", 10F),
+            BackColor = Theme.InputBackground,
+            ForeColor = Theme.TextPrimary,
+            BorderStyle = BorderStyle.None,
+            Font = Theme.MonoFont,
         };
-        grpLog.Controls.Add(_txtLog);
-        Controls.Add(grpLog);
+        cardLog.Controls.Add(_txtLog);
+        Controls.Add(cardLog);
 
         // ──────────────────────────────────────────────────────────────
         // Lifecycle
@@ -159,15 +215,49 @@ internal sealed class MainForm : Form
         _processCheckTimer = new System.Windows.Forms.Timer { Interval = 3000 };
         _processCheckTimer.Tick += (_, _) => UpdateGameRunningState();
 
-        Load += (_, _) =>
+        HandleCreated += (_, _) => Theme.ApplyDarkTitleBar(Handle);
+
+        Load += async (_, _) =>
         {
             FileLog.Init();
-            Log($"MoreCoop Manager v1.6.0 启动");
+            Log($"MoreCoop Manager v{UpdateChecker.CurrentVersion} 启动");
             Log($"日志文件: {FileLog.LogPath}");
             RefreshAll();
             _processCheckTimer.Start();
+
+            // Background update check — never blocks UI
+            await CheckForUpdatesAsync(silent: true);
         };
         FormClosing += (_, _) => _processCheckTimer.Stop();
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // Update check
+    // ────────────────────────────────────────────────────────────────
+    private async Task CheckForUpdatesAsync(bool silent)
+    {
+        var info = await UpdateChecker.CheckAsync();
+        _availableUpdate = info;
+
+        if (info is null)
+        {
+            if (!silent) Log("✗ 无法连接 GitHub 检查更新 (网络问题或被墙)");
+            return;
+        }
+
+        if (info.IsNewer)
+        {
+            Log($"✨ 有新版本可用: v{info.LatestVersion} (当前 v{UpdateChecker.CurrentVersion})");
+            Log($"   点 [关于 / 更新] 按钮可以下载新版或仅更新 mod 脚本");
+            // Highlight About button so user notices
+            _btnAbout.Text = $"● 有新版本";
+            _btnAbout.BackColor = Color.FromArgb(255, 152, 0);
+            _btnAbout.ForeColor = Color.White;
+        }
+        else
+        {
+            if (!silent) Log($"✓ 已是最新版 (v{UpdateChecker.CurrentVersion})");
+        }
     }
 
     // ────────────────────────────────────────────────────────────────
@@ -179,9 +269,9 @@ internal sealed class MainForm : Form
         if (gamePath is null)
         {
             _installer = null;
-            SetStatus(_lblGame, "游戏: ✗ 未找到 — 请点右边 [浏览...] 手动选游戏目录", false);
-            SetStatus(_lblUE4SS, "UE4SS: — (先选游戏目录)", null);
-            SetStatus(_lblMod, "MoreCoop: — (先选游戏目录)", null);
+            SetRow(_rowGame, "未找到 — 请点右边 [浏览...] 手动选游戏目录", Theme.StatusBad);
+            SetRow(_rowUE4SS, "— (先选游戏目录)", Theme.StatusNeutral);
+            SetRow(_rowMod,   "— (先选游戏目录)", Theme.StatusNeutral);
             _btnInstall.Enabled = false;
             _btnUninstall.Enabled = false;
             _btnFolder.Enabled = false;
@@ -190,23 +280,23 @@ internal sealed class MainForm : Form
         }
 
         _installer = new ModInstaller(gamePath);
-        var sourceTag = SteamFinder.LoadSavedPath() == gamePath ? "手选" : "自动检测";
-        SetStatus(_lblGame, $"游戏: ✓ [{sourceTag}] {gamePath}", true);
+        var sourceTag = SteamFinder.LoadSavedPath() == gamePath ? "手选" : "自动";
+        SetRow(_rowGame, $"[{sourceTag}] {gamePath}", Theme.StatusGood);
 
         if (_installer.UE4SSInstalled)
         {
             var origin = _installer.UE4SSInstalledByUs ? "本程序装的" : "你自己装的";
-            SetStatus(_lblUE4SS, $"UE4SS: ✓ 已安装 ({origin})", true);
+            SetRow(_rowUE4SS, $"已安装 ({origin})", Theme.StatusGood);
         }
         else
         {
-            SetStatus(_lblUE4SS, "UE4SS: ○ 未安装 — 点 [一键安装] 时会自动装上 (内嵌, 不联网)", null);
+            SetRow(_rowUE4SS, "未安装 — 点 [一键安装] 时会自动装上 (内嵌, 不联网)", Theme.StatusWarn);
         }
 
         if (_installer.ModInstalled)
         {
             var current = _installer.ReadCurrentMaxPlayers();
-            SetStatus(_lblMod, $"MoreCoop: ✓ 已安装 (当前 {current} 人)", true);
+            SetRow(_rowMod, $"已安装 (当前 {current} 人)", Theme.StatusGood);
             _suppressSliderEvents = true;
             _trkPlayers.Value = Math.Clamp(current, 4, 64);
             _numPlayers.Value = Math.Clamp(current, 4, 64);
@@ -214,16 +304,12 @@ internal sealed class MainForm : Form
         }
         else
         {
-            SetStatus(_lblMod, "MoreCoop: ✗ 未安装", false);
+            SetRow(_rowMod, "未安装", Theme.StatusBad);
         }
 
         UpdateGameRunningState();
     }
 
-    /// <summary>
-    /// Polled every 3 seconds. If the game is running we lock install/uninstall
-    /// to prevent file-lock errors. Launch button also reflects state.
-    /// </summary>
     private void UpdateGameRunningState()
     {
         var running = IsGameRunning();
@@ -270,14 +356,11 @@ internal sealed class MainForm : Form
         if (dlg.ShowDialog(this) != DialogResult.OK) return;
 
         var picked = dlg.SelectedPath;
-
         if (!SteamFinder.IsValidGamePath(picked))
         {
             var deeper = Path.Combine(picked, "Subnautica 2");
             if (SteamFinder.IsValidGamePath(deeper))
-            {
                 picked = deeper;
-            }
             else
             {
                 MessageBox.Show(this,
@@ -336,7 +419,7 @@ internal sealed class MainForm : Form
             {
                 _installer.UpdateMaxPlayers(value);
                 Log($"人数已改为 {value} (UE4SS 热生效, 游戏中下次创建房间即用此值)");
-                SetStatus(_lblMod, $"MoreCoop: ✓ 已安装 (当前 {value} 人)", true);
+                SetRow(_rowMod, $"已安装 (当前 {value} 人)", Theme.StatusGood);
             }
             catch (Exception ex)
             {
@@ -346,7 +429,7 @@ internal sealed class MainForm : Form
     }
 
     // ────────────────────────────────────────────────────────────────
-    // Install / Uninstall (refuse if game is running)
+    // Install / Uninstall
     // ────────────────────────────────────────────────────────────────
     private async Task InstallAsync()
     {
@@ -441,51 +524,130 @@ internal sealed class MainForm : Form
             Log("Mods 目录不存在 (UE4SS 可能未安装)");
     }
 
+    // ────────────────────────────────────────────────────────────────
+    // About dialog (with optional update section)
+    // ────────────────────────────────────────────────────────────────
     private void ShowAbout()
     {
-        var savedPath = SteamFinder.LoadSavedPath();
-        var savedNote = savedPath is null
-            ? ""
-            : $"\r\n\r\n当前手选的游戏目录:\r\n{savedPath}";
-
-        var msg = $"""
-                   MoreCoop Manager v1.6.0
-
-                   深海迷航 2 多人人数解锁补丁 (真·一键安装)
-
-                   ▸ 自动检测游戏 + UE4SS + mod 状态
-                   ▸ 内嵌 UE4SS, 全程不联网, 不用单独下载
-                   ▸ 人数 4–64, 拖滑块热生效, 不用关游戏
-                   ▸ 检测游戏是否运行, 防止文件锁错误
-                   ▸ 一键 Steam 启动游戏验证
-                   ▸ 完全可逆, 卸载干净
-
-                   ─── 永久最新版链接 ───
-                   {LatestReleaseUrl}
-                   (这个 URL 永远指向 GitHub 上最新版, 保存这个分享给朋友)
-
-                   ─── 许可与归属 ───
-                   本程序: GPL-3.0  (wuha-like-sleep)
-                   补丁原理: Zeusfail/Too-Many-Divers v1.2.0 (GPL-3.0)
-                   UE4SS: MIT  (Narknon, Subnautica2Modding)
-
-                   日志文件:
-                   {FileLog.LogPath}{savedNote}
-
-                   [是] 打开 GitHub 上的最新版页面 (检查更新)
-                   {(savedPath is null ? "[否] 关闭" : "[否] 清除手选路径, 改回自动检测")}
-                   """;
-        var result = MessageBox.Show(this, msg, "关于 MoreCoop Manager",
-            MessageBoxButtons.YesNo, MessageBoxIcon.Information);
-        if (result == DialogResult.Yes)
+        // If we don't have update info yet, check now (blocking briefly)
+        if (_availableUpdate is null)
         {
-            OpenUrl(LatestReleaseUrl);
+            Log("正在检查 GitHub 上的最新版...");
+            _ = Task.Run(async () =>
+            {
+                await CheckForUpdatesAsync(silent: false);
+                BeginInvoke(() => ShowAbout()); // re-open dialog with info loaded
+            });
+            return;
         }
-        else if (savedPath is not null)
+
+        var info = _availableUpdate;
+        var savedPath = SteamFinder.LoadSavedPath();
+        var savedNote = savedPath is null ? "" : $"\r\n\r\n手选的游戏目录: {savedPath}";
+
+        string updateSection;
+        if (info.IsNewer)
         {
-            SteamFinder.ClearSavedPath();
-            Log("已清除手选游戏路径, 将重新自动检测");
-            RefreshAll();
+            updateSection = $"\r\n─── ✨ 有新版本 ───\r\n" +
+                            $"GitHub 上最新: v{info.LatestVersion}  (本程序: v{UpdateChecker.CurrentVersion})\r\n\r\n" +
+                            $"[是] 下载新版管理器 (打开 GitHub 发布页)\r\n" +
+                            $"[否] 仅更新 mod 脚本 (热更新 main.lua, 不替换管理器)\r\n" +
+                            $"[取消] 关闭";
+
+            var result = MessageBox.Show(this,
+                BuildAboutBody(savedNote) + updateSection,
+                "关于 MoreCoop Manager",
+                MessageBoxButtons.YesNoCancel, MessageBoxIcon.Information);
+
+            switch (result)
+            {
+                case DialogResult.Yes:
+                    OpenUrl(info.ReleaseUrl);
+                    break;
+                case DialogResult.No:
+                    _ = UpdateModScriptAsync(info);
+                    break;
+            }
+        }
+        else
+        {
+            updateSection = $"\r\n─── 检查更新 ───\r\n" +
+                            $"已是最新版 (v{UpdateChecker.CurrentVersion}, GitHub 上也是 v{info.LatestVersion}){savedNote}";
+            if (savedPath is not null)
+                updateSection += $"\r\n\r\n[是] 打开 GitHub 仓库\r\n[否] 清除手选路径, 改回自动检测";
+            else
+                updateSection += $"\r\n\r\n[是] 打开 GitHub 仓库\r\n[否] 关闭";
+
+            var result = MessageBox.Show(this,
+                BuildAboutBody("") + updateSection,
+                "关于 MoreCoop Manager",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+
+            if (result == DialogResult.Yes)
+            {
+                OpenUrl(UpdateChecker.LatestReleasePageUrl);
+            }
+            else if (savedPath is not null)
+            {
+                SteamFinder.ClearSavedPath();
+                Log("已清除手选游戏路径, 将重新自动检测");
+                RefreshAll();
+            }
+        }
+    }
+
+    private static string BuildAboutBody(string savedNote) => $"""
+        MoreCoop Manager v{UpdateChecker.CurrentVersion}
+
+        深海迷航 2 多人人数解锁补丁 (一键安装)
+
+        ▸ 自动检测 + 手选游戏目录
+        ▸ 内嵌 UE4SS, 全程不联网装游戏组件
+        ▸ 人数 4–64 拖滑块热生效
+        ▸ 检测游戏运行, 防文件锁错误
+        ▸ Steam 一键启动游戏
+        ▸ 应用内自动检查更新
+
+        ─── 许可与归属 ───
+        本程序: GPL-3.0 (wuha-like-sleep)
+        补丁原理: Zeusfail/Too-Many-Divers v1.2.0 (GPL-3.0)
+        UE4SS: MIT (Narknon, Subnautica2Modding)
+
+        日志: {FileLog.LogPath}{savedNote}
+        """;
+
+    private async Task UpdateModScriptAsync(UpdateChecker.UpdateInfo info)
+    {
+        if (_installer is null || !_installer.ModInstalled)
+        {
+            MessageBox.Show(this,
+                "MoreCoop mod 还没装在游戏目录, 没有可更新的文件。\r\n请先 [一键安装]。",
+                "无法更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        if (RefuseIfGameRunning("更新")) return;
+
+        Log($"正在从 GitHub 下载 v{info.LatestVersion} 的 main.lua...");
+        var targetPath = Path.Combine(_installer.ModPath, "Scripts", "main.lua");
+        var (ok, error) = await UpdateChecker.DownloadAndReplaceAsync(info.MainLuaRawUrl, targetPath);
+
+        if (ok)
+        {
+            Log($"✓ main.lua 已更新到 v{info.LatestVersion}");
+            Log($"  注: UE4SS 会在游戏中下次加载时自动用新脚本");
+            MessageBox.Show(this,
+                $"已下载并替换 main.lua (v{info.LatestVersion})。\r\n\r\n" +
+                "管理器本身仍是旧版, 但 mod 脚本已经是最新的。\r\n" +
+                "如果想升级管理器也, 请到 GitHub 发布页下载新的 .exe。",
+                "Mod 脚本已更新", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        else
+        {
+            Log($"✗ 下载失败: {error}");
+            MessageBox.Show(this,
+                $"下载或写入 main.lua 失败:\r\n{error}\r\n\r\n" +
+                "请直接到 GitHub 发布页下载完整新版管理器。",
+                "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -500,38 +662,10 @@ internal sealed class MainForm : Form
         FileLog.Append(message);
     }
 
-    private static Label MakeStatusLabel(int x, int y, int width = 822) => new()
+    private static void SetRow(StatusRow row, string value, Color dotColor)
     {
-        Location = new Point(x, y),
-        Size = new Size(width, 26),
-        Text = "(检测中...)",
-        AutoEllipsis = true,
-    };
-
-    private static Button MakeButton(string text, int x, int y, int width = 156, int height = 44,
-                                     Color? bg = null, Color? fg = null)
-    {
-        var b = new Button
-        {
-            Text = text,
-            Location = new Point(x, y),
-            Size = new Size(width, height),
-            FlatStyle = FlatStyle.System,
-        };
-        if (bg.HasValue) { b.BackColor = bg.Value; b.FlatStyle = FlatStyle.Flat; }
-        if (fg.HasValue) b.ForeColor = fg.Value;
-        return b;
-    }
-
-    private static void SetStatus(Label label, string text, bool? good)
-    {
-        label.Text = text;
-        label.ForeColor = good switch
-        {
-            true => Color.FromArgb(46, 125, 50),
-            false => Color.FromArgb(198, 40, 40),
-            null => SystemColors.GrayText,
-        };
+        row.Value = value;
+        row.DotColor = dotColor;
     }
 
     private static void OpenUrl(string url)
