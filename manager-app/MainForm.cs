@@ -22,7 +22,7 @@ internal sealed class MainForm : Form
     private readonly ModernButton _btnBrowseGame;
     private readonly TrackBar _trkPlayers;
     private readonly NumericUpDown _numPlayers;
-    private readonly ModernButton _btnInstall, _btnUninstall, _btnLaunch, _btnFolder, _btnAbout;
+    private readonly ModernButton _btnInstall, _btnUninstall, _btnLaunch, _btnCheats, _btnFolder, _btnAbout;
     private readonly TextBox _txtLog;
     private readonly Color _aboutBaseColor;
     private readonly System.Windows.Forms.Timer _processCheckTimer;
@@ -151,15 +151,17 @@ internal sealed class MainForm : Form
             BackColor = Theme.Background,
         };
 
-        const int btnW = 156, btnH = 44, btnGap = 12;
+        // 6 buttons across, ~130 wide each, 10px gaps → 6*130 + 5*10 = 830, fits in 852
+        const int btnW = 130, btnH = 44, btnGap = 10;
         _btnInstall   = ModernButton.Success("一键安装 / 更新");
         _btnUninstall = ModernButton.Secondary("卸载");
         _btnLaunch    = ModernButton.Accent("启动游戏");
-        _btnFolder    = ModernButton.Secondary("打开 Mod 目录");
+        _btnCheats    = ModernButton.Secondary("修改器 / 作弊");
+        _btnFolder    = ModernButton.Secondary("Mod 目录");
         _btnAbout     = ModernButton.Secondary("关于 / 更新");
         _aboutBaseColor = _btnAbout.BackColor;
 
-        var buttons = new ModernButton[] { _btnInstall, _btnUninstall, _btnLaunch, _btnFolder, _btnAbout };
+        var buttons = new ModernButton[] { _btnInstall, _btnUninstall, _btnLaunch, _btnCheats, _btnFolder, _btnAbout };
         for (int i = 0; i < buttons.Length; i++)
         {
             buttons[i].Size = new Size(btnW, btnH);
@@ -170,12 +172,14 @@ internal sealed class MainForm : Form
         _btnInstall.Click   += async (_, _) => await InstallAsync();
         _btnUninstall.Click += async (_, _) => await UninstallAsync();
         _btnLaunch.Click    += (_, _) => LaunchGame();
+        _btnCheats.Click    += (_, _) => ShowCheats();
         _btnFolder.Click    += (_, _) => OpenModsFolder();
         _btnAbout.Click     += (_, _) => ShowAbout();
 
         tt.SetToolTip(_btnInstall,   "把 UE4SS (如果没装) 和 MoreCoop mod 装到游戏目录");
         tt.SetToolTip(_btnUninstall, "卸载 MoreCoop (可选一起卸 UE4SS)");
         tt.SetToolTip(_btnLaunch,    $"通过 Steam 启动深海迷航 2 (steam://rungameid/{SubnauticaSteamAppId})");
+        tt.SetToolTip(_btnCheats,    "游戏控制台命令清单 (无敌/免材料/解锁全蓝图等) + 社区修改器推荐");
         tt.SetToolTip(_btnFolder,    "在文件资源管理器里打开 ue4ss\\Mods 目录");
         tt.SetToolTip(_btnAbout,     "版本信息、检查 GitHub 最新版、更新 mod 脚本、日志文件位置");
 
@@ -522,6 +526,62 @@ internal sealed class MainForm : Form
             Process.Start("explorer.exe", target);
         else
             Log("Mods 目录不存在 (UE4SS 可能未安装)");
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // Cheats info — game already supports a dev console via the bundled
+    // UE4SS (CheatManagerEnablerMod). We don't write our own trainer
+    // because every cheat would need game-version-specific hook testing
+    // we can't do from a Mac. Instead, surface what's already available.
+    // ────────────────────────────────────────────────────────────────
+    private void ShowCheats()
+    {
+        const string CheatTogglesUrl = "https://www.nexusmods.com/subnautica2/mods/64";
+        const string FlingUrl        = "https://flingtrainer.com/trainer/subnautica-2-trainer/";
+
+        var msg = """
+                  修改器 / 作弊命令
+
+                  本工具不另写修改器, 但我们打包的 UE4SS 已经启用了游戏自带的
+                  开发者控制台。进游戏按 F2 打开。
+
+                  ─── 常用命令 ───
+
+                  god                 无敌 (无伤害 + 无饥渴 + 无氧气消耗)
+                  nocost              免材料合成
+                  attr oxygen 9999    锁定氧气值
+                  attr food 100       锁定饱食
+                  attr water 100      锁定口渴
+                  unlockall           解锁所有蓝图
+                  item <name> <qty>   给自己物品
+                  freecam             第三人称自由相机
+                  fastbuild           即时建造
+
+                  ─── 社区现成修改器 ───
+
+                  ▸ Cheat Toggles (Nexus mod #64)
+                    可视化开关 UE4SS Lua mod, 跟 MoreCoop 兼容
+                  ▸ FLiNG Trainer
+                    124+ 选项外挂, 免费
+                  ▸ WeMod
+                    跨游戏修改器平台
+
+                  ─── 想选哪个? ───
+
+                  [是]   打开 Cheat Toggles (Nexus, 推荐)
+                  [否]   打开 FLiNG Trainer 下载页
+                  [取消] 关闭对话框
+                  """;
+
+        var result = MessageBox.Show(this, msg, "修改器 / 作弊命令",
+            MessageBoxButtons.YesNoCancel, MessageBoxIcon.Information);
+
+        switch (result)
+        {
+            case DialogResult.Yes:    OpenUrl(CheatTogglesUrl); break;
+            case DialogResult.No:     OpenUrl(FlingUrl);        break;
+            default: /* Cancel */     break;
+        }
     }
 
     // ────────────────────────────────────────────────────────────────

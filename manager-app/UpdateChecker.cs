@@ -20,7 +20,7 @@ internal static class UpdateChecker
     private const string ApiUrl = $"https://api.github.com/repos/{Owner}/{Repo}/releases/latest";
 
     /// <summary>Hard-coded version this build represents. Bumped per release.</summary>
-    public const string CurrentVersion = "1.7.0";
+    public const string CurrentVersion = "1.8.0";
 
     /// <summary>Pinned in code so the About dialog can always show it.</summary>
     public const string LatestReleasePageUrl = $"https://github.com/{Owner}/{Repo}/releases/latest";
