@@ -54,8 +54,8 @@ internal sealed class MainForm : Form
     public MainForm()
     {
         Text = $"{Title}  v{UpdateChecker.CurrentVersion}";
-        ClientSize = new Size(880, 760);
-        MinimumSize = new Size(820, 660);
+        ClientSize = new Size(880, 820);
+        MinimumSize = new Size(820, 700);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.Sizable;
         BackColor = Theme.Background;
@@ -69,13 +69,14 @@ internal sealed class MainForm : Form
         var tt = new ToolTip();
 
         // ──────────────────────────────────────────────────────────────
-        // STATUS card  y=14 h=130
+        // STATUS card  y=14  h=140 → ends 154
+        //   Header 36, then three rows at +8, +40, +72 → last ends at 134
         // ──────────────────────────────────────────────────────────────
         var cardStatus = new CardPanel
         {
             CardTitle = "状态",
             Location = new Point(14, 14),
-            Size = new Size(ClientSize.Width - 28, 130),
+            Size = new Size(ClientSize.Width - 28, 140),
             Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
         };
 
@@ -99,7 +100,7 @@ internal sealed class MainForm : Form
         {
             Label = "UE4SS:",
             Value = "(检测中...)",
-            Location = new Point(CardPanel.InnerPadding, CardPanel.HeaderHeight + 42),
+            Location = new Point(CardPanel.InnerPadding, CardPanel.HeaderHeight + 40),
             Size = new Size(cardStatus.Width - 2 * CardPanel.InnerPadding, 26),
             Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
         };
@@ -108,7 +109,7 @@ internal sealed class MainForm : Form
         {
             Label = "MoreCoop:",
             Value = "(检测中...)",
-            Location = new Point(CardPanel.InnerPadding, CardPanel.HeaderHeight + 70),
+            Location = new Point(CardPanel.InnerPadding, CardPanel.HeaderHeight + 72),
             Size = new Size(cardStatus.Width - 2 * CardPanel.InnerPadding, 26),
             Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
         };
@@ -117,12 +118,12 @@ internal sealed class MainForm : Form
         Controls.Add(cardStatus);
 
         // ──────────────────────────────────────────────────────────────
-        // PLAYER COUNT card  y=156 h=115
+        // PLAYER COUNT card  y=166  h=115 → ends 281
         // ──────────────────────────────────────────────────────────────
         var cardPlayers = new CardPanel
         {
             CardTitle = "人数上限   (拖动滑块即可立即生效, 无需重启游戏)",
-            Location = new Point(14, 156),
+            Location = new Point(14, 166),
             Size = new Size(ClientSize.Width - 28, 115),
             Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
         };
@@ -161,13 +162,15 @@ internal sealed class MainForm : Form
         Controls.Add(cardPlayers);
 
         // ──────────────────────────────────────────────────────────────
-        // QUICK CHEATS card  y=283 h=185
+        // QUICK CHEATS card  y=293  h=220 → ends 513
+        //   Header 36, toggle btn at +8 (ends y=80), mappings start at +56 (y=92).
+        //   6 mapping rows × 20px = 120 → last ends at y=212. Card 220 → 8px bottom pad.
         // ──────────────────────────────────────────────────────────────
         var cardCheats = new CardPanel
         {
             CardTitle = "快捷键修改器   (全局快捷键 → 自动输入控制台命令)",
-            Location = new Point(14, 283),
-            Size = new Size(ClientSize.Width - 28, 185),
+            Location = new Point(14, 293),
+            Size = new Size(ClientSize.Width - 28, 220),
             Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
         };
 
@@ -189,8 +192,12 @@ internal sealed class MainForm : Form
             Font = Theme.BodyFont,
         };
 
-        // Mappings list (read-only labels). Two columns: combo (left) / desc (right).
-        int mapY = CardPanel.HeaderHeight + 56;
+        // Mappings list (read-only labels). Single column.
+        // mapY = HeaderHeight + 56 = 92 → 12px gap below toggle btn (ends y=80).
+        // 6 × 20 = 120 → last row ends y=212; card 220 → 8px bottom padding.
+        const int MapStartOffset = 56;
+        const int MapRowHeight   = 20;
+        int mapY = CardPanel.HeaderHeight + MapStartOffset;
         for (int i = 0; i < CheatMappings.Length; i++)
         {
             var (mods, key, cmd, desc) = CheatMappings[i];
@@ -198,8 +205,8 @@ internal sealed class MainForm : Form
             var row = new Label
             {
                 Text = $"{combo,-10}  →   {cmd,-22}   {desc}",
-                Location = new Point(CardPanel.InnerPadding + 4, mapY + i * 18),
-                Size = new Size(cardCheats.Width - 2 * CardPanel.InnerPadding - 4, 18),
+                Location = new Point(CardPanel.InnerPadding + 4, mapY + i * MapRowHeight),
+                Size = new Size(cardCheats.Width - 2 * CardPanel.InnerPadding - 4, MapRowHeight - 2),
                 Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
                 ForeColor = Theme.TextSecondary,
                 Font = Theme.MonoFont,
@@ -213,11 +220,12 @@ internal sealed class MainForm : Form
         Controls.Add(cardCheats);
 
         // ──────────────────────────────────────────────────────────────
-        // BUTTON row  y=480 h=50
+        // BUTTON row  y=525  h=50 → ends 575
+        //   Sits 12px below QuickCheats card (ends y=513).
         // ──────────────────────────────────────────────────────────────
         var btnPanel = new Panel
         {
-            Location = new Point(14, 480),
+            Location = new Point(14, 525),
             Size = new Size(ClientSize.Width - 28, 50),
             Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
             BackColor = Theme.Background,
@@ -257,13 +265,15 @@ internal sealed class MainForm : Form
         Controls.Add(btnPanel);
 
         // ──────────────────────────────────────────────────────────────
-        // LOG card  y=542 h=remaining
+        // LOG card  y=587  h=fills remaining (form_h - 587 - 14)
+        //   Sits 12px below button row (ends y=575).
+        //   At default ClientSize.Height=820 → log h=219.
         // ──────────────────────────────────────────────────────────────
         var cardLog = new CardPanel
         {
             CardTitle = "日志   (同时写到 %APPDATA%\\MoreCoop\\manager.log)",
-            Location = new Point(14, 542),
-            Size = new Size(ClientSize.Width - 28, ClientSize.Height - 542 - 14),
+            Location = new Point(14, 587),
+            Size = new Size(ClientSize.Width - 28, ClientSize.Height - 587 - 14),
             Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom,
         };
 
