@@ -23,10 +23,12 @@ internal sealed class ModInstaller
     public string ModPath => Path.Combine(UE4SSPath, "Mods", "MoreCoop");
     public string ModsTxt => Path.Combine(UE4SSPath, "Mods", "mods.txt");
     public string SettingsJson => Path.Combine(ModPath, "config", "settings.json");
+    public string QuickCheatsPath => Path.Combine(UE4SSPath, "Mods", "QuickCheats");
 
     public bool UE4SSInstalled => Directory.Exists(UE4SSPath) && File.Exists(ProxyDll);
     public bool UE4SSInstalledByUs => File.Exists(Path.Combine(UE4SSPath, UE4SSMarkerFile));
     public bool ModInstalled => File.Exists(Path.Combine(ModPath, "Scripts", "main.lua"));
+    public bool QuickCheatsInstalled => File.Exists(Path.Combine(QuickCheatsPath, "Scripts", "main.lua"));
 
     public ModInstaller(string gamePath) => GamePath = gamePath;
 
@@ -79,9 +81,24 @@ internal sealed class ModInstaller
             @"""MaxPlayers""\s*:\s*\d+", $"\"MaxPlayers\": {maxPlayers}");
         File.WriteAllText(SettingsJson, settings, new UTF8Encoding(false));
 
-        // 3) Register in mods.txt
+        // 3) Install QuickCheats companion mod (idempotent — overwrites)
+        //    It's harmless when the user has hotkeys OFF (just polls empty file).
+        progress?.Invoke("正在写入 QuickCheats 配套 mod...");
+        InstallQuickCheats();
+
+        // 4) Register both mods in mods.txt
         progress?.Invoke("正在注册到 UE4SS mods.txt...");
-        RegisterInModsTxt();
+        RegisterInModsTxt("MoreCoop");
+        RegisterInModsTxt("QuickCheats");
+    }
+
+    private void InstallQuickCheats()
+    {
+        Directory.CreateDirectory(QuickCheatsPath);
+        Directory.CreateDirectory(Path.Combine(QuickCheatsPath, "Scripts"));
+        File.WriteAllText(Path.Combine(QuickCheatsPath, "enabled.txt"), "", new UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(QuickCheatsPath, "Scripts", "main.lua"),
+            ReadStringResource("Resources.quickcheats_main.lua"), new UTF8Encoding(false));
     }
 
     /// <summary>
@@ -96,11 +113,22 @@ internal sealed class ModInstaller
             Directory.Delete(ModPath, recursive: true);
         }
 
+        if (Directory.Exists(QuickCheatsPath))
+        {
+            progress?.Invoke($"正在删除 QuickCheats 配套 mod: {QuickCheatsPath}");
+            Directory.Delete(QuickCheatsPath, recursive: true);
+        }
+
         if (File.Exists(ModsTxt))
         {
-            progress?.Invoke("正在从 mods.txt 移除 MoreCoop 条目");
+            progress?.Invoke("正在从 mods.txt 移除 MoreCoop + QuickCheats 条目");
             var kept = File.ReadAllLines(ModsTxt)
-                .Where(l => !l.TrimStart().StartsWith("MoreCoop", StringComparison.OrdinalIgnoreCase))
+                .Where(l =>
+                {
+                    var head = l.TrimStart();
+                    return !head.StartsWith("MoreCoop",    StringComparison.OrdinalIgnoreCase)
+                        && !head.StartsWith("QuickCheats", StringComparison.OrdinalIgnoreCase);
+                })
                 .ToArray();
             File.WriteAllLines(ModsTxt, kept, new UTF8Encoding(false));
         }
@@ -176,20 +204,20 @@ internal sealed class ModInstaller
             File.Delete(ProxyDll);
     }
 
-    private void RegisterInModsTxt()
+    private void RegisterInModsTxt(string modName)
     {
         if (File.Exists(ModsTxt))
         {
             var lines = File.ReadAllLines(ModsTxt);
-            if (lines.Any(l => l.TrimStart().StartsWith("MoreCoop", StringComparison.OrdinalIgnoreCase)))
+            if (lines.Any(l => l.TrimStart().StartsWith(modName, StringComparison.OrdinalIgnoreCase)))
                 return;
 
-            File.AppendAllText(ModsTxt, Environment.NewLine + "MoreCoop : 1" + Environment.NewLine,
+            File.AppendAllText(ModsTxt, Environment.NewLine + $"{modName} : 1" + Environment.NewLine,
                 new UTF8Encoding(false));
         }
         else
         {
-            File.WriteAllText(ModsTxt, "MoreCoop : 1" + Environment.NewLine, new UTF8Encoding(false));
+            File.WriteAllText(ModsTxt, $"{modName} : 1" + Environment.NewLine, new UTF8Encoding(false));
         }
     }
 

@@ -1,15 +1,16 @@
 using System.Diagnostics;
+using Microsoft.Win32;
 
 namespace MoreCoopManager;
 
 /// <summary>
-/// Main window. v1.7 rewrite:
-///   - Dark "deep sea" theme via Theme.cs + ModernControls.cs (CardPanel, ModernButton, StatusRow)
-///   - Resizable (anchors set so cards stretch horizontally, log fills vertically)
-///   - Background update check via UpdateChecker.cs; if a newer GitHub release
-///     exists, the [关于 / 更新] button is highlighted and the About dialog
-///     gains a 更新 Mod 脚本 action that downloads main.lua from the new tag
-///     and overwrites the local one (UE4SS hot-reloads on next session).
+/// Main window. v1.9 adds the Quick Cheats hotkey card:
+///   - Off by default (privacy + safety: doesn't hijack global keys uninvited)
+///   - When user toggles ON: registers Ctrl+F1..F6 system-wide.
+///   - Each hotkey writes its console command to %APPDATA%\MoreCoop\cheats.cmd
+///   - The QuickCheats Lua mod (bundled and installed alongside MoreCoop)
+///     polls the file and executes the command via PlayerController:ConsoleCommand
+///   - Enable/disable state persists to HKCU\Software\MoreCoop\HotkeysEnabled
 /// </summary>
 internal sealed class MainForm : Form
 {
@@ -18,24 +19,43 @@ internal sealed class MainForm : Form
     private const int SubnauticaSteamAppId = 1962700;
     private const string GameProcessName = "Subnautica2-Win64-Shipping";
 
+    // Hotkey persistence
+    private const string HotkeyRegKey = @"Software\MoreCoop";
+    private const string HotkeyRegValue = "HotkeysEnabled";
+
+    /// <summary>Default cheat mappings. Order = display order.</summary>
+    private static readonly (HotkeyManager.Mods Mods, Keys Key, string Command, string Desc)[] CheatMappings =
+    {
+        (HotkeyManager.Mods.Control, Keys.F1, "god",                "无敌 (无伤害 + 无饥渴 + 无氧气消耗)"),
+        (HotkeyManager.Mods.Control, Keys.F2, "nocost",             "免材料合成"),
+        (HotkeyManager.Mods.Control, Keys.F3, "unlockall",          "解锁所有蓝图"),
+        (HotkeyManager.Mods.Control, Keys.F4, "fastbuild",          "即时建造"),
+        (HotkeyManager.Mods.Control, Keys.F5, "freecam",            "切换自由相机"),
+        (HotkeyManager.Mods.Control, Keys.F6, "attr oxygen 9999",   "氧气补满"),
+    };
+
     private readonly StatusRow _rowGame, _rowUE4SS, _rowMod;
     private readonly ModernButton _btnBrowseGame;
     private readonly TrackBar _trkPlayers;
     private readonly NumericUpDown _numPlayers;
     private readonly ModernButton _btnInstall, _btnUninstall, _btnLaunch, _btnCheats, _btnFolder, _btnAbout;
+    private readonly ModernButton _btnHotkeyToggle;
+    private readonly Label _lblHotkeyStatus;
     private readonly TextBox _txtLog;
     private readonly Color _aboutBaseColor;
     private readonly System.Windows.Forms.Timer _processCheckTimer;
+    private readonly HotkeyManager _hotkeys;
 
     private ModInstaller? _installer;
     private bool _suppressSliderEvents;
     private UpdateChecker.UpdateInfo? _availableUpdate;
+    private bool _hotkeysEnabled;
 
     public MainForm()
     {
         Text = $"{Title}  v{UpdateChecker.CurrentVersion}";
-        ClientSize = new Size(880, 620);
-        MinimumSize = new Size(760, 540);
+        ClientSize = new Size(880, 760);
+        MinimumSize = new Size(820, 660);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.Sizable;
         BackColor = Theme.Background;
@@ -46,10 +66,10 @@ internal sealed class MainForm : Form
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); }
         catch { /* fall back */ }
 
-        var tt = new ToolTip { BackColor = Theme.CardBackground, ForeColor = Theme.TextPrimary };
+        var tt = new ToolTip();
 
         // ──────────────────────────────────────────────────────────────
-        // STATUS card
+        // STATUS card  y=14 h=130
         // ──────────────────────────────────────────────────────────────
         var cardStatus = new CardPanel
         {
@@ -97,13 +117,13 @@ internal sealed class MainForm : Form
         Controls.Add(cardStatus);
 
         // ──────────────────────────────────────────────────────────────
-        // PLAYER COUNT card
+        // PLAYER COUNT card  y=156 h=115
         // ──────────────────────────────────────────────────────────────
         var cardPlayers = new CardPanel
         {
             CardTitle = "人数上限   (拖动滑块即可立即生效, 无需重启游戏)",
             Location = new Point(14, 156),
-            Size = new Size(ClientSize.Width - 28, 125),
+            Size = new Size(ClientSize.Width - 28, 115),
             Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
         };
 
@@ -141,17 +161,68 @@ internal sealed class MainForm : Form
         Controls.Add(cardPlayers);
 
         // ──────────────────────────────────────────────────────────────
-        // BUTTON row (no card, just a panel)
+        // QUICK CHEATS card  y=283 h=185
+        // ──────────────────────────────────────────────────────────────
+        var cardCheats = new CardPanel
+        {
+            CardTitle = "快捷键修改器   (全局快捷键 → 自动输入控制台命令)",
+            Location = new Point(14, 283),
+            Size = new Size(ClientSize.Width - 28, 185),
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+        };
+
+        _btnHotkeyToggle = ModernButton.Secondary("启用快捷键");
+        _btnHotkeyToggle.Size = new Size(180, 36);
+        _btnHotkeyToggle.Location = new Point(CardPanel.InnerPadding, CardPanel.HeaderHeight + 8);
+        _btnHotkeyToggle.Click += (_, _) => ToggleHotkeys();
+        tt.SetToolTip(_btnHotkeyToggle,
+            "开启后, Ctrl+F1..F6 全局快捷键会自动输入对应控制台命令到游戏。\r\n" +
+            "需要游戏已运行并加载了 MoreCoop + QuickCheats mod。");
+
+        _lblHotkeyStatus = new Label
+        {
+            Text = "状态: 已禁用 (默认)",
+            Location = new Point(CardPanel.InnerPadding + 195, CardPanel.HeaderHeight + 16),
+            Size = new Size(cardCheats.Width - CardPanel.InnerPadding - 200, 24),
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+            ForeColor = Theme.TextSecondary,
+            Font = Theme.BodyFont,
+        };
+
+        // Mappings list (read-only labels). Two columns: combo (left) / desc (right).
+        int mapY = CardPanel.HeaderHeight + 56;
+        for (int i = 0; i < CheatMappings.Length; i++)
+        {
+            var (mods, key, cmd, desc) = CheatMappings[i];
+            var combo = HotkeyManager.FormatCombo(mods, key);
+            var row = new Label
+            {
+                Text = $"{combo,-10}  →   {cmd,-22}   {desc}",
+                Location = new Point(CardPanel.InnerPadding + 4, mapY + i * 18),
+                Size = new Size(cardCheats.Width - 2 * CardPanel.InnerPadding - 4, 18),
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+                ForeColor = Theme.TextSecondary,
+                Font = Theme.MonoFont,
+                AutoEllipsis = true,
+            };
+            cardCheats.Controls.Add(row);
+        }
+
+        cardCheats.Controls.Add(_btnHotkeyToggle);
+        cardCheats.Controls.Add(_lblHotkeyStatus);
+        Controls.Add(cardCheats);
+
+        // ──────────────────────────────────────────────────────────────
+        // BUTTON row  y=480 h=50
         // ──────────────────────────────────────────────────────────────
         var btnPanel = new Panel
         {
-            Location = new Point(14, 293),
+            Location = new Point(14, 480),
             Size = new Size(ClientSize.Width - 28, 50),
             Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
             BackColor = Theme.Background,
         };
 
-        // 6 buttons across, ~130 wide each, 10px gaps → 6*130 + 5*10 = 830, fits in 852
         const int btnW = 130, btnH = 44, btnGap = 10;
         _btnInstall   = ModernButton.Success("一键安装 / 更新");
         _btnUninstall = ModernButton.Secondary("卸载");
@@ -176,23 +247,23 @@ internal sealed class MainForm : Form
         _btnFolder.Click    += (_, _) => OpenModsFolder();
         _btnAbout.Click     += (_, _) => ShowAbout();
 
-        tt.SetToolTip(_btnInstall,   "把 UE4SS (如果没装) 和 MoreCoop mod 装到游戏目录");
-        tt.SetToolTip(_btnUninstall, "卸载 MoreCoop (可选一起卸 UE4SS)");
+        tt.SetToolTip(_btnInstall,   "把 UE4SS (如果没装), MoreCoop mod 和 QuickCheats 装到游戏目录");
+        tt.SetToolTip(_btnUninstall, "卸载 MoreCoop + QuickCheats (可选一起卸 UE4SS)");
         tt.SetToolTip(_btnLaunch,    $"通过 Steam 启动深海迷航 2 (steam://rungameid/{SubnauticaSteamAppId})");
-        tt.SetToolTip(_btnCheats,    "游戏控制台命令清单 (无敌/免材料/解锁全蓝图等) + 社区修改器推荐");
+        tt.SetToolTip(_btnCheats,    "游戏控制台命令清单 + 社区修改器推荐");
         tt.SetToolTip(_btnFolder,    "在文件资源管理器里打开 ue4ss\\Mods 目录");
         tt.SetToolTip(_btnAbout,     "版本信息、检查 GitHub 最新版、更新 mod 脚本、日志文件位置");
 
         Controls.Add(btnPanel);
 
         // ──────────────────────────────────────────────────────────────
-        // LOG card (fills remaining vertical space)
+        // LOG card  y=542 h=remaining
         // ──────────────────────────────────────────────────────────────
         var cardLog = new CardPanel
         {
             CardTitle = "日志   (同时写到 %APPDATA%\\MoreCoop\\manager.log)",
-            Location = new Point(14, 355),
-            Size = new Size(ClientSize.Width - 28, ClientSize.Height - 355 - 14),
+            Location = new Point(14, 542),
+            Size = new Size(ClientSize.Width - 28, ClientSize.Height - 542 - 14),
             Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom,
         };
 
@@ -216,6 +287,7 @@ internal sealed class MainForm : Form
         // ──────────────────────────────────────────────────────────────
         // Lifecycle
         // ──────────────────────────────────────────────────────────────
+        _hotkeys = new HotkeyManager(Handle); // Handle is created lazily; will be re-fetched as needed
         _processCheckTimer = new System.Windows.Forms.Timer { Interval = 3000 };
         _processCheckTimer.Tick += (_, _) => UpdateGameRunningState();
 
@@ -229,10 +301,123 @@ internal sealed class MainForm : Form
             RefreshAll();
             _processCheckTimer.Start();
 
+            // Restore hotkey enabled state from registry
+            if (LoadHotkeysEnabledPref())
+            {
+                Log("从设置恢复: 快捷键修改器之前是启用状态, 重新注册");
+                TryEnableHotkeys(silent: true);
+            }
+            UpdateHotkeyButton();
+
             // Background update check — never blocks UI
             await CheckForUpdatesAsync(silent: true);
         };
-        FormClosing += (_, _) => _processCheckTimer.Stop();
+
+        FormClosing += (_, _) =>
+        {
+            _processCheckTimer.Stop();
+            _hotkeys.Dispose();
+        };
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // Hotkey window message routing
+    // ────────────────────────────────────────────────────────────────
+    protected override void WndProc(ref Message m)
+    {
+        if (_hotkeys?.TryHandle(ref m) == true) return;
+        base.WndProc(ref m);
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // QuickCheats hotkey toggle
+    // ────────────────────────────────────────────────────────────────
+    private void ToggleHotkeys()
+    {
+        if (_hotkeysEnabled)
+        {
+            _hotkeys.UnregisterAll();
+            _hotkeysEnabled = false;
+            Log("快捷键修改器已禁用, 全局快捷键已释放");
+        }
+        else
+        {
+            TryEnableHotkeys(silent: false);
+        }
+        SaveHotkeysEnabledPref(_hotkeysEnabled);
+        UpdateHotkeyButton();
+    }
+
+    private void TryEnableHotkeys(bool silent)
+    {
+        try
+        {
+            foreach (var (mods, key, cmd, _) in CheatMappings)
+            {
+                _hotkeys.Register(mods, key, () =>
+                {
+                    CheatCommandSender.Send(cmd);
+                    Log($"⚡ 按下 {HotkeyManager.FormatCombo(mods, key)} → 发送 \"{cmd}\"");
+                });
+            }
+            _hotkeysEnabled = true;
+            if (!silent)
+                Log("✓ 快捷键修改器已启用: Ctrl+F1..F6 在游戏中按下即触发对应作弊命令");
+        }
+        catch (Exception ex)
+        {
+            _hotkeys.UnregisterAll();
+            _hotkeysEnabled = false;
+            Log($"✗ 启用失败: {ex.Message}");
+            MessageBox.Show(this,
+                $"无法注册全局快捷键:\r\n{ex.Message}\r\n\r\n" +
+                "通常是因为其他程序 (录屏/翻译/语音助手 等) 已经占用了 Ctrl+F1..F6 中的某个组合。\r\n" +
+                "请关掉那些程序再试。",
+                "快捷键冲突", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private void UpdateHotkeyButton()
+    {
+        if (_hotkeysEnabled)
+        {
+            _btnHotkeyToggle.Text = "已启用 (点击关闭)";
+            _btnHotkeyToggle.BackColor = Theme.SuccessBadge;
+            _btnHotkeyToggle.ForeColor = Color.White;
+            _lblHotkeyStatus.Text = "状态: ✓ 已启用 — 在游戏里按 Ctrl+F1..F6 触发对应命令";
+            _lblHotkeyStatus.ForeColor = Theme.StatusGood;
+        }
+        else
+        {
+            _btnHotkeyToggle.Text = "启用快捷键";
+            _btnHotkeyToggle.BackColor = Theme.ButtonBackground;
+            _btnHotkeyToggle.ForeColor = Theme.TextPrimary;
+            _lblHotkeyStatus.Text = "状态: 已禁用 (默认; 启用后会全局占用 Ctrl+F1..F6)";
+            _lblHotkeyStatus.ForeColor = Theme.TextSecondary;
+        }
+    }
+
+    private static bool LoadHotkeysEnabledPref()
+    {
+        if (!OperatingSystem.IsWindows()) return false;
+        try
+        {
+            using var k = Registry.CurrentUser.OpenSubKey(HotkeyRegKey);
+            var v = k?.GetValue(HotkeyRegValue) as int?;
+            return v == 1;
+        }
+        catch { return false; }
+    }
+
+    private static void SaveHotkeysEnabledPref(bool enabled)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        try
+        {
+            using var k = Registry.CurrentUser.CreateSubKey(HotkeyRegKey);
+            k?.SetValue(HotkeyRegValue, enabled ? 1 : 0, RegistryValueKind.DWord);
+        }
+        catch { /* ignore */ }
     }
 
     // ────────────────────────────────────────────────────────────────
@@ -253,7 +438,6 @@ internal sealed class MainForm : Form
         {
             Log($"✨ 有新版本可用: v{info.LatestVersion} (当前 v{UpdateChecker.CurrentVersion})");
             Log($"   点 [关于 / 更新] 按钮可以下载新版或仅更新 mod 脚本");
-            // Highlight About button so user notices
             _btnAbout.Text = $"● 有新版本";
             _btnAbout.BackColor = Color.FromArgb(255, 152, 0);
             _btnAbout.ForeColor = Color.White;
@@ -300,7 +484,8 @@ internal sealed class MainForm : Form
         if (_installer.ModInstalled)
         {
             var current = _installer.ReadCurrentMaxPlayers();
-            SetRow(_rowMod, $"已安装 (当前 {current} 人)", Theme.StatusGood);
+            var qc = _installer.QuickCheatsInstalled ? " + QuickCheats" : "";
+            SetRow(_rowMod, $"已安装 (当前 {current} 人){qc}", Theme.StatusGood);
             _suppressSliderEvents = true;
             _trkPlayers.Value = Math.Clamp(current, 4, 64);
             _numPlayers.Value = Math.Clamp(current, 4, 64);
@@ -423,7 +608,8 @@ internal sealed class MainForm : Form
             {
                 _installer.UpdateMaxPlayers(value);
                 Log($"人数已改为 {value} (UE4SS 热生效, 游戏中下次创建房间即用此值)");
-                SetRow(_rowMod, $"已安装 (当前 {value} 人)", Theme.StatusGood);
+                var qc = _installer.QuickCheatsInstalled ? " + QuickCheats" : "";
+                SetRow(_rowMod, $"已安装 (当前 {value} 人){qc}", Theme.StatusGood);
             }
             catch (Exception ex)
             {
@@ -448,7 +634,7 @@ internal sealed class MainForm : Form
         try
         {
             await Task.Run(() => _installer.Install(target, msg => Log(msg)));
-            Log("✓ 全部完成! 启动游戏后, 按 Insert 打开 UE4SS 控制台应看到 [MoreCoop] 加载日志");
+            Log("✓ 全部完成! 启动游戏后, 按 Insert 打开 UE4SS 控制台应看到 [MoreCoop] + [QuickCheats] 加载日志");
             RefreshAll();
         }
         catch (Exception ex)
@@ -469,10 +655,10 @@ internal sealed class MainForm : Form
         if (_installer.UE4SSInstalledByUs)
         {
             var result = MessageBox.Show(this,
-                "确认卸载 MoreCoop?\r\n\r\n" +
+                "确认卸载 MoreCoop + QuickCheats?\r\n\r\n" +
                 "UE4SS 是本程序之前安装的。是否一起卸掉?\r\n\r\n" +
-                "[是] 一起卸 (MoreCoop + UE4SS, 游戏完全恢复原版)\r\n" +
-                "[否] 只卸 MoreCoop (保留 UE4SS, 以后装其他 UE4SS mod 用)\r\n" +
+                "[是] 一起卸 (MoreCoop + QuickCheats + UE4SS, 游戏完全恢复原版)\r\n" +
+                "[否] 只卸 MoreCoop + QuickCheats (保留 UE4SS, 以后装其他 UE4SS mod 用)\r\n" +
                 "[取消] 不卸",
                 "确认卸载", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
             if (result == DialogResult.Cancel) return;
@@ -481,7 +667,7 @@ internal sealed class MainForm : Form
         else
         {
             var result = MessageBox.Show(this,
-                "确认卸载 MoreCoop?\r\n\r\n本操作会删除 mod 文件, 游戏将恢复 4 人上限。",
+                "确认卸载 MoreCoop + QuickCheats?\r\n\r\n本操作会删除两个 mod 文件, 游戏将恢复 4 人上限。",
                 "确认卸载", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
             if (result != DialogResult.Yes) return;
         }
@@ -494,8 +680,8 @@ internal sealed class MainForm : Form
         {
             await Task.Run(() => _installer.Uninstall(alsoRemoveUE4SS, msg => Log(msg)));
             Log(alsoRemoveUE4SS
-                ? "✓ 已卸载, MoreCoop + UE4SS 都已移除, 游戏完全恢复原版"
-                : "✓ MoreCoop 已卸载, 游戏恢复 4 人原版 (UE4SS 保留)");
+                ? "✓ 已卸载, 全部组件移除, 游戏完全恢复原版"
+                : "✓ MoreCoop + QuickCheats 已卸载, 游戏恢复 4 人原版 (UE4SS 保留)");
             RefreshAll();
         }
         catch (Exception ex)
@@ -529,10 +715,7 @@ internal sealed class MainForm : Form
     }
 
     // ────────────────────────────────────────────────────────────────
-    // Cheats info — game already supports a dev console via the bundled
-    // UE4SS (CheatManagerEnablerMod). We don't write our own trainer
-    // because every cheat would need game-version-specific hook testing
-    // we can't do from a Mac. Instead, surface what's already available.
+    // Cheats info dialog (separate from QuickCheats hotkey feature)
     // ────────────────────────────────────────────────────────────────
     private void ShowCheats()
     {
@@ -542,33 +725,27 @@ internal sealed class MainForm : Form
         var msg = """
                   修改器 / 作弊命令
 
-                  本工具不另写修改器, 但我们打包的 UE4SS 已经启用了游戏自带的
-                  开发者控制台。进游戏按 F2 打开。
+                  本工具已经把"快捷键修改器"内置在主界面上 (默认 OFF, 点开关启用)。
+                  启用后, Ctrl+F1..F6 直接触发常用作弊命令, 不用打开控制台。
 
-                  ─── 常用命令 ───
+                  ─── 手动控制台 (F2) 命令清单 ───
 
                   god                 无敌 (无伤害 + 无饥渴 + 无氧气消耗)
                   nocost              免材料合成
-                  attr oxygen 9999    锁定氧气值
-                  attr food 100       锁定饱食
-                  attr water 100      锁定口渴
+                  attr oxygen 9999    氧气满
+                  attr food 100       饱食锁定
+                  attr water 100      口渴锁定
                   unlockall           解锁所有蓝图
                   item <name> <qty>   给自己物品
                   freecam             第三人称自由相机
                   fastbuild           即时建造
 
-                  ─── 社区现成修改器 ───
+                  ─── 想要更全的可视化修改器? ───
 
-                  ▸ Cheat Toggles (Nexus mod #64)
-                    可视化开关 UE4SS Lua mod, 跟 MoreCoop 兼容
-                  ▸ FLiNG Trainer
-                    124+ 选项外挂, 免费
-                  ▸ WeMod
-                    跨游戏修改器平台
+                  ▸ Cheat Toggles (Nexus mod #64) - 设置菜单里开关切换
+                  ▸ FLiNG Trainer - 124+ 选项独立外挂, 免费
 
-                  ─── 想选哪个? ───
-
-                  [是]   打开 Cheat Toggles (Nexus, 推荐)
+                  [是]   打开 Cheat Toggles (Nexus)
                   [否]   打开 FLiNG Trainer 下载页
                   [取消] 关闭对话框
                   """;
@@ -589,14 +766,13 @@ internal sealed class MainForm : Form
     // ────────────────────────────────────────────────────────────────
     private void ShowAbout()
     {
-        // If we don't have update info yet, check now (blocking briefly)
         if (_availableUpdate is null)
         {
             Log("正在检查 GitHub 上的最新版...");
             _ = Task.Run(async () =>
             {
                 await CheckForUpdatesAsync(silent: false);
-                BeginInvoke(() => ShowAbout()); // re-open dialog with info loaded
+                BeginInvoke(() => ShowAbout());
             });
             return;
         }
@@ -605,14 +781,13 @@ internal sealed class MainForm : Form
         var savedPath = SteamFinder.LoadSavedPath();
         var savedNote = savedPath is null ? "" : $"\r\n\r\n手选的游戏目录: {savedPath}";
 
-        string updateSection;
         if (info.IsNewer)
         {
-            updateSection = $"\r\n─── ✨ 有新版本 ───\r\n" +
-                            $"GitHub 上最新: v{info.LatestVersion}  (本程序: v{UpdateChecker.CurrentVersion})\r\n\r\n" +
-                            $"[是] 下载新版管理器 (打开 GitHub 发布页)\r\n" +
-                            $"[否] 仅更新 mod 脚本 (热更新 main.lua, 不替换管理器)\r\n" +
-                            $"[取消] 关闭";
+            var updateSection = $"\r\n─── ✨ 有新版本 ───\r\n" +
+                                $"GitHub 上最新: v{info.LatestVersion}  (本程序: v{UpdateChecker.CurrentVersion})\r\n\r\n" +
+                                $"[是] 下载新版管理器 (打开 GitHub 发布页)\r\n" +
+                                $"[否] 仅更新 mod 脚本 (热更新 main.lua, 不替换管理器)\r\n" +
+                                $"[取消] 关闭";
 
             var result = MessageBox.Show(this,
                 BuildAboutBody(savedNote) + updateSection,
@@ -621,22 +796,17 @@ internal sealed class MainForm : Form
 
             switch (result)
             {
-                case DialogResult.Yes:
-                    OpenUrl(info.ReleaseUrl);
-                    break;
-                case DialogResult.No:
-                    _ = UpdateModScriptAsync(info);
-                    break;
+                case DialogResult.Yes: OpenUrl(info.ReleaseUrl); break;
+                case DialogResult.No:  _ = UpdateModScriptAsync(info); break;
             }
         }
         else
         {
-            updateSection = $"\r\n─── 检查更新 ───\r\n" +
-                            $"已是最新版 (v{UpdateChecker.CurrentVersion}, GitHub 上也是 v{info.LatestVersion}){savedNote}";
-            if (savedPath is not null)
-                updateSection += $"\r\n\r\n[是] 打开 GitHub 仓库\r\n[否] 清除手选路径, 改回自动检测";
-            else
-                updateSection += $"\r\n\r\n[是] 打开 GitHub 仓库\r\n[否] 关闭";
+            var updateSection = $"\r\n─── 检查更新 ───\r\n" +
+                                $"已是最新版 (v{UpdateChecker.CurrentVersion}, GitHub 上也是 v{info.LatestVersion}){savedNote}";
+            updateSection += savedPath is null
+                ? "\r\n\r\n[是] 打开 GitHub 仓库\r\n[否] 关闭"
+                : "\r\n\r\n[是] 打开 GitHub 仓库\r\n[否] 清除手选路径, 改回自动检测";
 
             var result = MessageBox.Show(this,
                 BuildAboutBody("") + updateSection,
@@ -664,6 +834,7 @@ internal sealed class MainForm : Form
         ▸ 自动检测 + 手选游戏目录
         ▸ 内嵌 UE4SS, 全程不联网装游戏组件
         ▸ 人数 4–64 拖滑块热生效
+        ▸ 快捷键修改器 (Ctrl+F1..F6, 用户可开关)
         ▸ 检测游戏运行, 防文件锁错误
         ▸ Steam 一键启动游戏
         ▸ 应用内自动检查更新
@@ -695,11 +866,6 @@ internal sealed class MainForm : Form
         {
             Log($"✓ main.lua 已更新到 v{info.LatestVersion}");
             Log($"  注: UE4SS 会在游戏中下次加载时自动用新脚本");
-            MessageBox.Show(this,
-                $"已下载并替换 main.lua (v{info.LatestVersion})。\r\n\r\n" +
-                "管理器本身仍是旧版, 但 mod 脚本已经是最新的。\r\n" +
-                "如果想升级管理器也, 请到 GitHub 发布页下载新的 .exe。",
-                "Mod 脚本已更新", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         else
         {
